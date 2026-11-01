@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::UI::HiDpi::*;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, ReleaseCapture, SetCapture, SetFocus};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus, ReleaseCapture, SetCapture, SetFocus};
 use windows_sys::Win32::UI::Shell::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -68,6 +68,8 @@ const BONK: [i32; 5] = [-8, 8, -5, 3, 0]; // sideways px at 96 dpi
 const KEY_COLOUR: u32 = 0xFF00FF;     // the spark window's transparent colour
 const CODE_HELP: &str = "A pairing code is 10 letters and numbers, like ABCDE-FGHJK.";
 const EN_CHANGE: usize = 0x0300;
+const EN_SETFOCUS: usize = 0x0100;
+const EN_KILLFOCUS: usize = 0x0200;
 const TIMER_BOOT: usize = 1;
 const TIMER_FACE: usize = 2;
 const TIMER_BAR: usize = 3;
@@ -88,7 +90,7 @@ static PAPER_BRUSH: AtomicUsize = AtomicUsize::new(0);
 static PIXEL16: AtomicUsize = AtomicUsize::new(0); // Silkscreen 16, or null -> built-in face
 static PIXEL24: AtomicUsize = AtomicUsize::new(0);
 static PIXEL32: AtomicUsize = AtomicUsize::new(0);
-static PLEX: [AtomicUsize; 3] = [AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0)]; // body, caption, code
+static PLEX: [AtomicUsize; 4] = [AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0)]; // body, caption, code, button
 static ABOUT: AtomicUsize = AtomicUsize::new(0); // the About screen while it is open, else 0
 static SPARK_WIN: AtomicUsize = AtomicUsize::new(0);
 static SPARK_AT: AtomicU8 = AtomicU8::new(0); // spark frame showing, 0..4
@@ -224,7 +226,7 @@ unsafe fn load_type(hwnd: HWND) {
         let f = brand::font(if weight == 600 { "IBM Plex Mono SemiBold" } else { "IBM Plex Mono" }, px(size), weight, false);
         if f.is_null() { brand::font("Consolas", px(size), weight, false) } else { f }
     };
-    let old = [(plex(14, 400), &PLEX[0]), (plex(12, 400), &PLEX[1]), (plex(20, 600), &PLEX[2])].map(|(f, slot)| slot.swap(f as usize, Relaxed));
+    let old = [(plex(14, 400), &PLEX[0]), (plex(12, 400), &PLEX[1]), (plex(20, 600), &PLEX[2]), (plex(15, 400), &PLEX[3])].map(|(f, slot)| slot.swap(f as usize, Relaxed));
     for (font, ids) in [(0, &[ID_HOST, ID_CLIENT, ID_STOP, ID_STATUS][..]), (2, &[ID_CODE])] {
         for id in ids { SendMessageW(GetDlgItem(hwnd, *id as i32), WM_SETFONT, PLEX[font].load(Relaxed), 1); }
     }
@@ -295,7 +297,7 @@ fn code_dx() -> i32 { BONK_AT.load(Relaxed).checked_sub(1).map_or(0, |i| BONK[i 
 
 /// The whole field (label, frame, box) shifted by the bonk step (0 at rest).
 unsafe fn place_code(hwnd: HWND) {
-    MoveWindow(GetDlgItem(hwnd, ID_CODE as i32), px(20 + code_dx()), px(102), px(320), px(28), 1);
+    MoveWindow(GetDlgItem(hwnd, ID_CODE as i32), px(20 + code_dx()), px(104), px(320), px(28), 1);
     InvalidateRect(hwnd, &prect(0, 76, 360, 68), 0);
 }
 
@@ -318,12 +320,12 @@ unsafe extern "system" fn code_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
 }
 
 /// Plex Mono text; `font` indexes PLEX.
-unsafe fn plex_text(hdc: HDC, r: &RECT, font: usize, s: &str, c: u32) {
+unsafe fn plex_text(hdc: HDC, r: &RECT, font: usize, s: &str, c: u32, center: bool) {
     let old = SelectObject(hdc, PLEX[font].load(Relaxed) as _);
     SetBkMode(hdc, 1);
     SetTextColor(hdc, c);
     let mut rr = *r;
-    DrawTextW(hdc, wide(s).as_ptr(), -1, &mut rr, DT_SINGLELINE | DT_NOPREFIX | DT_LEFT | DT_TOP);
+    DrawTextW(hdc, wide(s).as_ptr(), -1, &mut rr, DT_SINGLELINE | DT_NOPREFIX | if center { DT_CENTER | DT_VCENTER } else { DT_LEFT | DT_TOP });
     SelectObject(hdc, old);
 }
 
@@ -338,9 +340,9 @@ unsafe extern "system" fn about_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
             GetClientRect(hwnd, &mut c);
             brand::fill(hdc, &c, PAPER);
             title_band(hdc, Face::Idle);
-            plex_text(hdc, &prect(16, 84, 328, 20), 0, &format!("Version {}", update::VERSION), BLACK);
-            plex_text(hdc, &brand::rect(px(16), c.bottom - px(112), px(328), px(20)), 0, TAGLINE, BLACK);
-            plex_text(hdc, &brand::rect(px(16), c.bottom - px(88), px(328), px(16)), 1, DEDICATION, MUTED);
+            plex_text(hdc, &prect(16, 84, 328, 20), 0, &format!("Version {}", update::VERSION), BLACK, false);
+            plex_text(hdc, &brand::rect(px(16), c.bottom - px(112), px(328), px(20)), 0, TAGLINE, BLACK, false);
+            plex_text(hdc, &brand::rect(px(16), c.bottom - px(88), px(328), px(16)), 1, DEDICATION, MUTED, false);
             EndPaint(hwnd, &ps);
             0
         }
@@ -586,7 +588,7 @@ fn other_box(mons: &[RECT], m: &Map) -> RECT {
 }
 
 unsafe fn labelled_box(hdc: HDC, r: &RECT, face: u32, label: &str, dropped: bool) {
-    if dropped { brand::frame(hdc, r, face, BLACK) } else { brand::rounded(hdc, r, face, BLACK, 6) }
+    if dropped { brand::frame(hdc, r, face, GREY) } else { brand::rounded(hdc, r, face, GREY, 6) }
     pixel_text(hdc, r, 16, label, BLACK, true);
 }
 
@@ -653,7 +655,7 @@ unsafe fn drag(hwnd: HWND, msg: u32, lp: LPARAM) {
 
 fn in_rommel(lp: LPARAM) -> bool {
     let (x, y) = lparam_xy(lp);
-    let r = prect(16, 12, 40, 40);
+    let r = prect(16, 17, 30, 30);
     x >= r.left && x < r.right && y >= r.top && y < r.bottom
 }
 
@@ -676,7 +678,7 @@ unsafe fn paint_bubbles(hdc: HDC, u: i32) {
     for (i, (dx, size)) in [(11, 1), (14, 2), (9, 2), (12, 1)].into_iter().enumerate() {
         let rise = (f - i as i32 * 5).rem_euclid(20) + if f > i as i32 * 5 { 0 } else { 99 };
         if rise > 14 { continue }
-        let y = px(12) + (10 - rise) * u;
+        let y = px(17) + (10 - rise) * u;
         if y < 0 { continue }
         let r = brand::rect(px(16) + dx * u, y, size * u, size * u);
         brand::fill(hdc, &r, BLACK);
@@ -686,12 +688,13 @@ unsafe fn paint_bubbles(hdc: HDC, u: i32) {
 
 // ---------- painting ----------
 
-/// Lockup on the left, then the app name as a small Silkscreen 16 label on the wordmark's baseline.
+/// Lockup at u = 3 on the left, then the app name as a small Silkscreen 16 label on the wordmark's baseline.
 unsafe fn title_band(hdc: HDC, f: Face) {
     brand::fill(hdc, &prect(0, 0, 360, 64), MINT);
-    brand::lockup(hdc, px(16), px(12), px(4), f, &LIGHT, BLACK);
-    pixel_text(hdc, &prect(184, 38, 160, 16), 16, APP, BLACK, false);
-    brand::fill(hdc, &prect(0, 64, 360, 1), BLACK);
+    let (x, y, u) = (px(16), px(17), px(3));
+    brand::lockup(hdc, x, y, u, f, &LIGHT, BLACK);
+    pixel_text(hdc, &brand::rect(x + 39 * u + px(12), y + 9 * u - 5 * px(2), px(160), px(16)), 16, APP, BLACK, false);
+    brand::fill(hdc, &prect(0, 64, 360, 1), GREY);
 }
 
 unsafe fn paint(hwnd: HWND) {
@@ -703,7 +706,7 @@ unsafe fn paint(hwnd: HWND) {
     } else {
         brand::fill(hdc, &prect(0, 0, 360, HEIGHT + (MAX_PEERS as i32 + 1) * ROW), PAPER);
         title_band(hdc, face());
-        if EGG.load(Relaxed) > 0 { paint_bubbles(hdc, px(4)) }
+        if EGG.load(Relaxed) > 0 { paint_bubbles(hdc, px(3)) }
         // launch bar: a mint block stepping along the band's foot while we look for the other PC
         if STARTED.load(Relaxed) && TRAY_STATE.load(Relaxed) == TRAY_OFF {
             brand::fill(hdc, &prect(0, 60, 360, 4), BLACK);
@@ -712,7 +715,8 @@ unsafe fn paint(hwnd: HWND) {
         }
         pixel_text(hdc, &prect(16 + code_dx(), 80, 328, 16), 16, "Pairing code", BLACK, false);
         pixel_text(hdc, &prect(16, 152, 328, 16), 16, "Where is the other PC", BLACK, false);
-        brand::frame(hdc, &prect(16 + code_dx(), 96, 328, 40), PAPER, if ERR.load(Relaxed) { DANGER } else { BLACK }); // behind the code box
+        let code_frame = if ERR.load(Relaxed) { DANGER } else if GetFocus() == GetDlgItem(hwnd, ID_CODE as i32) { BLUE } else { GREY };
+        brand::frame(hdc, &prect(16 + code_dx(), 96, 328, 44), PAPER, code_frame); // behind the code box
         paint_panel(hdc);
     }
     EndPaint(hwnd, &ps);
@@ -744,7 +748,7 @@ unsafe fn end_boot(hwnd: HWND) {
     show_peers(hwnd); // anything found while the boot screen was up
 }
 
-/// Owner-drawn button: the frame, pixel label, A glyph on the filled one, blue only for focus.
+/// Owner-drawn button: the frame, Plex label, A glyph on the filled one, blue only for focus.
 unsafe fn draw_button(d: &DrawItem) {
     let primary = d.ctl_id as isize == ID_HOST;
     let pressed = d.state & ODS_SELECTED != 0;
@@ -753,19 +757,22 @@ unsafe fn draw_button(d: &DrawItem) {
     r.right -= 2; r.bottom -= 2; // room for the drop
     brand::fill(d.hdc, &d.rc, PAPER);
     if pressed { r.left += 2; r.top += 2; r.right += 2; r.bottom += 2; } // squish: sits down into its drop
-    let (face, ink) = match (primary, disabled) {
-        (_, true) => (GREY, MUTED),
-        (true, _) => (BLACK, SUNKEN),
-        (false, _) => (PAPER, BLACK),
+    let (face, ink, frame) = match (primary, disabled) {
+        (_, true) => (SUNKEN, MUTED, GREY),
+        (true, _) => (BLACK, SUNKEN, BLACK),
+        (false, _) => (PAPER, BLACK, GREY),
     };
-    let border = if d.state & ODS_FOCUS != 0 { BLUE } else { BLACK };
-    if pressed { brand::rounded(d.hdc, &r, face, border, 6) } else { brand::frame(d.hdc, &r, face, border) }
+    if !pressed && !disabled { // the drop: grey, or the darker border on the filled button
+        let drop = if primary { MUTED } else { GREY };
+        brand::rounded(d.hdc, &brand::rect(r.left + 2, r.top + 2, r.right - r.left, r.bottom - r.top), drop, drop, 6);
+    }
+    brand::rounded(d.hdc, &r, face, if d.state & ODS_FOCUS != 0 { BLUE } else { frame }, 6);
     if d.state & ODS_FOCUS != 0 { // a 2 px blue ring
         brand::rounded(d.hdc, &brand::rect(r.left + 1, r.top + 1, r.right - r.left - 2, r.bottom - r.top - 2), face, BLUE, 5);
     }
     let mut buf = [0u16; 64];
     let n = GetWindowTextW(d.hwnd, buf.as_mut_ptr(), 64) as usize;
-    pixel_text(d.hdc, &r, 16, &String::from_utf16_lossy(&buf[..n]), ink, true);
+    plex_text(d.hdc, &r, 3, &String::from_utf16_lossy(&buf[..n]), ink, true);
     if primary && !disabled { // the A glyph in the shell colour
         let a = brand::rect(r.left + px(12), (r.top + r.bottom) / 2 - px(10), px(20), px(20));
         brand::rounded(d.hdc, &a, MINT, MINT, px(20));
@@ -965,6 +972,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         InvalidateRect(GetDlgItem(hwnd, ID_STATUS as i32), null(), 1);
                     }
                 }
+                ID_CODE if wp >> 16 == EN_SETFOCUS || wp >> 16 == EN_KILLFOCUS => { InvalidateRect(hwnd, &prect(0, 76, 360, 68), 0); }
                 _ if (ID_PEER..ID_PEER + MAX_PEERS as isize).contains(&id) => {
                     let found = SHOWN.lock().unwrap().get((id - ID_PEER) as usize).cloned();
                     if let Some(f) = found {
