@@ -12,7 +12,9 @@ A Windows-only Rust GUI app that shares one mouse and keyboard between two PCs o
 - **Version 0.2.0.** `cargo test` (5 tests, plus 1 ignored network test) and `cargo build --release` pass on Windows. `src/gui.rs` compiles, including the `OFFLINE` and `settled_face()` edit.
 - **Seen working on one PC:** the real fonts, the Update button, settings migration, and a full self-update using a patched `get()` that read local files: real signature check, a failed download and a bad signature each left the exe untouched, then the running exe swapped, relaunched and `roam.old` was removed. WinHTTP was separately tested against real GitHub, including the asset redirect.
 - **Installer tested on one PC:** `installer.iss` built with Inno Setup 6.7.3; silent install, launch and uninstall all worked, without admin rights. `roam-setup.exe` is unsigned, so SmartScreen will warn once.
-- **Not yet run:** the release workflow, an update from a real GitHub release, the tray balloon. End-to-end crossing between two real PCs is also unconfirmed. Treat all of these as untested until you see them work.
+- **Released:** v0.2.0 is on GitHub, built by the release workflow.
+- **Crossing:** the owner has used it between two real PCs on 0.2.0.
+- **Not yet run:** an update from a real GitHub release, the tray balloon, the arrival Rommel during a real crossing (it was only triggered directly). Treat these as untested until you see them work.
 
 ## Build
 Windows with Rust (MSVC toolchain): `cargo test` then `cargo build --release`, or double-click `build.cmd` (runs both, leaves `roam.exe` beside it). `build.rs` embeds `roam.ico` using the `winresource` crate (needs `rc.exe`). Dependencies: `chacha20poly1305`, `ed25519-dalek`, `sha2`, `windows-sys 0.59`; build-dep `winresource`.
@@ -59,6 +61,8 @@ The signing key is the Actions secret `ROAM_SIGNING_KEY`; the public half is in 
 - Window hides to the tray when the PCs connect and returns when the link drops. Heel (button or tray menu) restarts the process.
 - Tray icon is Rommel on a colour: Mint = mouse here, Paper = mouse on the other PC, Cartridge Grey with sleepy Rommel = not connected.
 - Layout panel draws the real monitors (primary first) and a draggable "Other" box that snaps to the nearest monitor edge.
+- `layout()` and `load_type()` hold all sizes and fonts, and rerun on `WM_DPICHANGED`. The EDIT box must stay taller than its font's line or it paints over its frame.
+- When the mouse lands on a PC, Happy Rommel shows beside the cursor for 800 ms in a click-through window that never takes focus.
 - Tap Rommel five times: grin and bubbles. One tap: alert and woof.
 
 ## Settings on disk

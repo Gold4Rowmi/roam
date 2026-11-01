@@ -44,6 +44,10 @@ struct DrawItem { ctl_type: u32, ctl_id: u32, item_id: u32, action: u32, state: 
 const WM_TRAY: u32 = WM_APP + 1;
 const WM_REFRESH: u32 = WM_APP + 2; // worker threads post this; the UI thread applies PENDING
 const WM_CLOSE_NOW: u32 = WM_APP + 3; // the updater started the new exe; this one goes
+const WM_ARRIVED: u32 = WM_APP + 4;   // the cursor landed here at (wparam, lparam)
+const TOAST_SIZE: i32 = 96;           // 12 units of Rommel's tile at 8 px
+const TOAST_MS: u32 = 800;            // a reaction, so under a second
+const TIMER_TOAST: usize = 5;
 const TIMER_BOOT: usize = 1;
 const TIMER_FACE: usize = 2;
 const TIMER_BAR: usize = 3;
@@ -63,6 +67,8 @@ static PAPER_BRUSH: AtomicUsize = AtomicUsize::new(0);
 static PIXEL16: AtomicUsize = AtomicUsize::new(0); // Silkscreen 16, or null -> built-in face
 static PIXEL24: AtomicUsize = AtomicUsize::new(0);
 static PIXEL32: AtomicUsize = AtomicUsize::new(0);
+static PLEX: [AtomicUsize; 3] = [AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0)]; // body, caption, code
+static TOAST: AtomicUsize = AtomicUsize::new(0);
 static STARTED: AtomicBool = AtomicBool::new(false);
 static BOOT: AtomicU8 = AtomicU8::new(0); // boot tick 1..=20 while booting, 0 when done
 static FACE: AtomicU8 = AtomicU8::new(0);
@@ -144,15 +150,97 @@ pub fn close() {
     unsafe { PostMessageW(MAIN.load(Relaxed) as HWND, WM_CLOSE_NOW, 0, 0) };
 }
 
+/// The mouse just landed on this PC at (x, y). Safe from any thread.
+pub fn arrived(x: i32, y: i32) {
+    unsafe { PostMessageW(MAIN.load(Relaxed) as HWND, WM_ARRIVED, x as isize as usize, y as isize) };
+}
+
+/// True even while the main window sits in the tray, unlike IsWindowVisible.
+unsafe fn flagged_visible(hwnd: HWND, id: isize) -> bool {
+    GetWindowLongW(GetDlgItem(hwnd, id as i32), GWL_STYLE) as u32 & WS_VISIBLE != 0
+}
+
+/// Sizes the window and every control for the current DPI. Runs at launch, when the window
+/// crosses to a monitor with another scale, and when the Update button appears.
+unsafe fn layout(hwnd: HWND) {
+    let grew = if flagged_visible(hwnd, ID_UPDATE) { UPDATE_ROW } else { 0 };
+    let mut r = RECT { left: 0, top: 0, right: px(360), bottom: px(HEIGHT + grew) };
+    AdjustWindowRectExForDpi(&mut r, STYLE, 0, 0, DPI.load(Relaxed) as u32);
+    SetWindowPos(hwnd, null_mut(), 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    for (id, x, y, w, h) in [
+        (ID_CODE, 20, 99, 320, 34), // EDIT paints outside its window if shorter than its line, over the frame
+        (ID_HOST, 16, 364, 328, 44),
+        (ID_CLIENT, 16, 416, 328, 44),
+        (ID_STOP, 16, 364, 328, 44),
+        (ID_UPDATE, 16, 468, 328, 44),
+        (ID_STATUS, 16, 466 + grew, 328, 56),
+        (ID_DEDICATION, 16, 524 + grew, 328, 16),
+    ] {
+        MoveWindow(GetDlgItem(hwnd, id as i32), px(x), px(y), px(w), px(h), 1);
+    }
+}
+
+/// Type for the current DPI: Silkscreen 16/24/32 and IBM Plex Mono 400/600, with fallbacks.
+unsafe fn load_type(hwnd: HWND) {
+    for (slot, size) in [(&PIXEL16, 16), (&PIXEL24, 24), (&PIXEL32, 32)] {
+        DeleteObject(slot.swap(brand::font("Silkscreen", px(size), 400, true) as usize, Relaxed) as _);
+    }
+    let plex = |size: i32, weight: i32| {
+        // Windows sees the 600 weight as its own family
+        let f = brand::font(if weight == 600 { "IBM Plex Mono SemiBold" } else { "IBM Plex Mono" }, px(size), weight, false);
+        if f.is_null() { brand::font("Consolas", px(size), weight, false) } else { f }
+    };
+    let old = [(plex(14, 400), &PLEX[0]), (plex(12, 400), &PLEX[1]), (plex(24, 600), &PLEX[2])].map(|(f, slot)| slot.swap(f as usize, Relaxed));
+    for (font, ids) in [(0, &[ID_HOST, ID_CLIENT, ID_STOP, ID_STATUS][..]), (1, &[ID_DEDICATION]), (2, &[ID_CODE])] {
+        for id in ids { SendMessageW(GetDlgItem(hwnd, *id as i32), WM_SETFONT, PLEX[font].load(Relaxed), 1); }
+    }
+    for f in old { DeleteObject(f as _); } // only now, when no control still holds them
+}
+
+unsafe extern "system" fn toast_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if msg != WM_PAINT { return DefWindowProcW(hwnd, msg, wp, lp) }
+    let mut ps: PAINTSTRUCT = zeroed();
+    let hdc = BeginPaint(hwnd, &mut ps);
+    let u = px(TOAST_SIZE) / 12;
+    brand::fill(hdc, &brand::rect(0, 0, 12 * u + 2, 12 * u + 2), BLACK);
+    brand::fill(hdc, &brand::rect(1, 1, 12 * u, 12 * u), MINT);
+    brand::draw_rommel(hdc, 1 + u, 1 + u, u, Face::Happy, &LIGHT);
+    EndPaint(hwnd, &ps);
+    0
+}
+
+/// Click-through and never takes focus, so it can't get in the way of what the mouse does next.
+unsafe fn make_toast() {
+    let cls = wide("ROWMI.roam.toast");
+    let wc = WNDCLASSW {
+        style: 0, lpfnWndProc: Some(toast_proc), cbClsExtra: 0, cbWndExtra: 0, hInstance: null_mut(), hIcon: null_mut(),
+        hCursor: null_mut(), hbrBackground: null_mut(), lpszMenuName: null(), lpszClassName: cls.as_ptr(),
+    };
+    RegisterClassW(&wc);
+    let t = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_LAYERED,
+        cls.as_ptr(), null(), WS_POPUP, 0, 0, 0, 0, null_mut(), null_mut(), null_mut(), null());
+    SetLayeredWindowAttributes(t, 0, 255, LWA_ALPHA);
+    TOAST.store(t as usize, Relaxed);
+}
+
+/// Rommel beside the cursor, on the side towards the middle of the screen so he is never off it.
+unsafe fn show_toast(hwnd: HWND, x: i32, y: i32) {
+    let t = TOAST.load(Relaxed) as HWND;
+    let size = px(TOAST_SIZE) / 12 * 12 + 2;
+    let mut m: MONITORINFO = zeroed();
+    m.cbSize = size_of::<MONITORINFO>() as u32;
+    GetMonitorInfoW(MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST), &mut m);
+    let w = m.rcWork;
+    let beside = |p: i32, lo: i32, hi: i32| (if p < (lo + hi) / 2 { p + px(24) } else { p - px(24) - size }).clamp(lo, hi - size);
+    SetWindowPos(t, HWND_TOPMOST, beside(x, w.left, w.right), beside(y, w.top, w.bottom), size, size, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    InvalidateRect(t, null(), 0);
+    SetTimer(hwnd, TIMER_TOAST, TOAST_MS, None);
+}
+
 /// First offer of this run: make room for the button, then Rommel, the jingle and a tray balloon.
 unsafe fn announce(hwnd: HWND, v: &str) {
-    let mut r = RECT { left: 0, top: 0, right: px(360), bottom: px(HEIGHT + UPDATE_ROW) };
-    AdjustWindowRectExForDpi(&mut r, STYLE, 0, 0, DPI.load(Relaxed) as u32);
-    SetWindowPos(hwnd, null_mut(), 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER);
-    for (id, y, h) in [(ID_STATUS, 466, 56), (ID_DEDICATION, 524, 16)] {
-        MoveWindow(GetDlgItem(hwnd, id as i32), px(16), px(y + UPDATE_ROW), px(328), px(h), 1);
-    }
     ShowWindow(GetDlgItem(hwnd, ID_UPDATE as i32), SW_SHOW);
+    layout(hwnd);
     InvalidateRect(hwnd, null(), 0);
     brand::play(brand::TAG);
     react(hwnd, Face::Alert, 800);
@@ -172,7 +260,7 @@ unsafe fn refresh(hwnd: HWND) {
         let b = GetDlgItem(hwnd, ID_UPDATE as i32);
         SetWindowTextW(b, wide(&format!("Update to {v}")).as_ptr());
         EnableWindow(b, 1);
-        if IsWindowVisible(b) == 0 { announce(hwnd, &v) }
+        if !flagged_visible(hwnd, ID_UPDATE) { announce(hwnd, &v) }
         InvalidateRect(b, null(), 0);
     }
     match vis {
@@ -513,36 +601,22 @@ pub fn run() {
         ICONS[TRAY_AWAY as usize].store(brand::app_icon(sm, PAPER, Face::Idle) as usize, Relaxed);
 
         DPI.store(GetDpiForWindow(hwnd) as usize, Relaxed);
-        let mut r = RECT { left: 0, top: 0, right: px(360), bottom: px(HEIGHT) };
-        AdjustWindowRectExForDpi(&mut r, STYLE, 0, 0, DPI.load(Relaxed) as u32);
-        SetWindowPos(hwnd, null_mut(), 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER);
 
-        // type: Silkscreen 16/24/32 and IBM Plex Mono 400/600, with fallbacks
-        PIXEL16.store(brand::font("Silkscreen", px(16), 400, true) as usize, Relaxed);
-        PIXEL24.store(brand::font("Silkscreen", px(24), 400, true) as usize, Relaxed);
-        PIXEL32.store(brand::font("Silkscreen", px(32), 400, true) as usize, Relaxed);
-        let plex = |size: i32, weight: i32| {
-            // Windows sees the 600 weight as its own family
-            let f = brand::font(if weight == 600 { "IBM Plex Mono SemiBold" } else { "IBM Plex Mono" }, px(size), weight, false);
-            if f.is_null() { brand::font("Consolas", px(size), weight, false) } else { f }
-        };
-        let (body, caption, big) = (plex(14, 400), plex(12, 400), plex(24, 600));
-
-        // controls start hidden behind the boot screen
-        let ctl = |class: &str, text: &str, extra: u32, x: i32, y: i32, w: i32, h: i32, id: isize| {
+        // controls start hidden behind the boot screen; layout() places them
+        let ctl = |class: &str, text: &str, extra: u32, id: isize| {
             CreateWindowExW(0, wide(class).as_ptr(), wide(text).as_ptr(), WS_CHILD | extra,
-                px(x), px(y), px(w), px(h), hwnd, id as HMENU, null_mut(), null())
+                0, 0, 0, 0, hwnd, id as HMENU, null_mut(), null())
         };
-        let code = ctl("EDIT", "", WS_TABSTOP | 1 /*center*/ | 8 /*uppercase*/ | 0x80 /*autohscroll*/, 20, 104, 320, 24, ID_CODE);
-        let host = ctl("BUTTON", "Roam from this PC", WS_TABSTOP | BS_OWNERDRAW, 16, 364, 328, 44, ID_HOST);
-        let client = ctl("BUTTON", "Be controlled", WS_TABSTOP | BS_OWNERDRAW, 16, 416, 328, 44, ID_CLIENT);
-        let stop = ctl("BUTTON", "Heel", WS_TABSTOP | BS_OWNERDRAW, 16, 364, 328, 44, ID_STOP);
-        ctl("BUTTON", "Update", WS_TABSTOP | BS_OWNERDRAW, 16, 468, 328, 44, ID_UPDATE);
-        let stat = ctl("STATIC", "Drag the mint box next to the monitor edge the other PC sits beside, then pick what this PC does.", 0, 16, 466, 328, 56, ID_STATUS);
-        let ded = ctl("STATIC", &format!("Made in memory of Rommel. v{}", update::VERSION), 0, 16, 524, 328, 16, ID_DEDICATION);
-        for h in [host, client, stop, stat] { SendMessageW(h, WM_SETFONT, body as usize, 1); }
-        SendMessageW(ded, WM_SETFONT, caption as usize, 1);
-        SendMessageW(code, WM_SETFONT, big as usize, 1);
+        let code = ctl("EDIT", "", WS_TABSTOP | 1 /*center*/ | 8 /*uppercase*/ | 0x80 /*autohscroll*/, ID_CODE);
+        ctl("BUTTON", "Roam from this PC", WS_TABSTOP | BS_OWNERDRAW, ID_HOST);
+        ctl("BUTTON", "Be controlled", WS_TABSTOP | BS_OWNERDRAW, ID_CLIENT);
+        ctl("BUTTON", "Heel", WS_TABSTOP | BS_OWNERDRAW, ID_STOP);
+        ctl("BUTTON", "Update", WS_TABSTOP | BS_OWNERDRAW, ID_UPDATE);
+        ctl("STATIC", "Drag the mint box next to the monitor edge the other PC sits beside, then pick what this PC does.", 0, ID_STATUS);
+        ctl("STATIC", &format!("Made in memory of Rommel. v{}", update::VERSION), 0, ID_DEDICATION);
+        load_type(hwnd);
+        layout(hwnd);
+        make_toast();
         migrate_code(&std::env::current_exe().unwrap().with_file_name("roam.code"), &code_file());
         if let Ok(saved) = std::fs::read_to_string(code_file()) {
             let mut lines = saved.lines();
@@ -675,6 +749,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_KEYDOWN | WM_LBUTTONDOWN if BOOT.load(Relaxed) >= 6 => { end_boot(hwnd); 0 } // any input after 300 ms skips
         WM_REFRESH => { refresh(hwnd); 0 }
         WM_CLOSE_NOW => { quit(hwnd); 0 }
+        WM_ARRIVED => { show_toast(hwnd, wp as isize as i32, lp as i32); 0 }
+        WM_TIMER if wp == TIMER_TOAST => { KillTimer(hwnd, TIMER_TOAST); ShowWindow(TOAST.load(Relaxed) as HWND, SW_HIDE); 0 }
+        WM_DPICHANGED => { // the window crossed to a monitor with another scale
+            DPI.store((wp & 0xFFFF) as usize, Relaxed);
+            let r = &*(lp as *const RECT);
+            SetWindowPos(hwnd, null_mut(), r.left, r.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            load_type(hwnd);
+            layout(hwnd);
+            InvalidateRect(hwnd, null(), 1);
+            0
+        }
         WM_PAINT => { paint(hwnd); 0 }
         WM_ERASEBKGND => 1, // paint() covers everything; skipping the erase stops the boot frames flickering
         WM_LBUTTONDOWN if BOOT.load(Relaxed) == 0 && in_rommel(lp) => { tap_rommel(hwnd); 0 }

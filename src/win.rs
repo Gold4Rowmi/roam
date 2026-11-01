@@ -1,5 +1,5 @@
 //! Windows side: host captures input with low-level hooks + raw input, client injects with SendInput.
-use crate::gui::{status, tray, visible, TRAY_AWAY, TRAY_HERE, TRAY_OFF};
+use crate::gui::{arrived, status, tray, visible, TRAY_AWAY, TRAY_HERE, TRAY_OFF};
 use crate::net::{Link, Msg, CLIENT, HOST, MAX_CLIP, PORT};
 use std::mem::{size_of, zeroed};
 use std::net::{SocketAddr, UdpSocket};
@@ -198,6 +198,7 @@ fn take_back(frac: f32) {
     if !REMOTE.swap(false, Relaxed) { return }
     let (x, y) = near_edge(EDGE.load(Relaxed), frac);
     unsafe { SetCursorPos(x, y) };
+    arrived(x, y);
     crate::brand::play(crate::brand::OFF);  // and came home
     status("Back on this PC.");
     tray(TRAY_HERE);
@@ -281,6 +282,7 @@ pub fn client(secret: &str) {
                 (active, edge) = (true, e ^ 1);
                 let (x, y) = near_edge(edge, f);
                 SetCursorPos(x, y);
+                arrived(x, y);
                 crate::brand::play(crate::brand::TAG);  // tag jingle: it arrived here
                 tray(TRAY_HERE);
             },
