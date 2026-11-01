@@ -1,6 +1,6 @@
 ---
 name: "rowmi-design"
-description: "Design and build anything in the ROWMI brand (edgehop/Roam, SaveForge/dig, minibot, VITACART, the brand itself): app UI, websites, boot and splash screens, icons, posts, sounds. Carries the exact pixel grids for Rommel and the wordmark. Use whenever ROWMI, Rommel or one of those apps comes up."
+description: Design and build anything in the ROWMI brand (edgehop/Roam, SaveForge/dig, minibot, VITACART, and the brand itself) - app UI, websites, splash and boot screens, icons, posts, sounds. Carries the exact pixel grids for Rommel and the wordmark. Use whenever ROWMI, Rommel, or one of those apps comes up.
 ---
 
 # ROWMI design
@@ -122,7 +122,8 @@ A 64×40 dot matrix, one dot per logo pixel. Four claw taps; the ROWMI word step
 
 - 4 px spacing scale; pixel art on 8. Radii 6 outer, 4 inner. One separation device per group.
 - One filled (ink) button per section: Rommel Black fill, Paper text, a round A glyph in the app's shell colour on the left; secondary buttons are Paper with a Cartridge Grey frame and the 2 px drop; destructive is red and specific. Buttons are 44 to 48 px tall, radius 6, label in Plex Mono 15, sentence case.
-- App window chrome: a title bar in the app's shell with the lockup at u = 3 on the left (Rommel 30 px, word 81 x 15 px) and the app name in Silkscreen 16; nothing else in the bar. Body on Paper with the grid-paper ground at the content's pixel size.
+- **Inside an app, the app is the hero and ROWMI is the signature.** The header is the app's shell colour with Rommel (Idle, 30 or 40 px) and the app name in Silkscreen 32, both black. No ROWMI wordmark in the header or anywhere on a working screen: Rommel alone is the ROWMI mark. The wordmark appears in an app only on the boot screen and the About screen. If a "by ROWMI" line is ever needed (a store listing, a website hero), it sits under the app name, smaller, as the pixel wordmark at a whole unit, never in a font.
+- Body on Paper with the grid-paper ground at the content's pixel size.
 - Console menu feel: arrows move, A opens, B goes back, L/R switch tabs, everywhere. Every gesture has a visible alternative. Touch targets 44 px.
 - Grid paper is the default ground, scaled to the content's pixel unit. Patterns in `patterns/`: the pack, confetti, cartridge ribs, grid paper, bubbles. Patterns are fixed tiles on the 8 px grid; a safe zone around Rommel is left empty, never masked.
 - Posts: text top left, Rommel bottom right, lockup bottom left, margins 10 % of the short side. One headline, one sentence.
@@ -135,4 +136,4 @@ Short, warm, plain. Say what happens, not what it's called. No "supercharge", no
 
 ## Before shipping, check
 
-Rommel and the wordmark drawn from the grids in this skill, never from memory or a font · Whole pixel units, no mixels · Silkscreen only at 8/16/24/32/64 · Plex Mono 400/600 only · one shell, text on it black · blue only for selection · Rommel Idle unless reacting; black on dark with the outline · frame depth only · pixel art stepped, never scaled or faded · boot once per launch, skippable, ends on the logo · every press has a sound · no tagline, dedication or version on any working screen · contrast 4.5 : 1 · 44 px targets · all four states designed · no dark patterns.
+Rommel and the wordmark drawn from the grids in this skill, never from memory or a font · Whole pixel units, no mixels · Silkscreen only at 8/16/24/32/64 · Plex Mono 400/600 only · one shell, text on it black · blue only for selection · Rommel Idle unless reacting; black on dark with the outline · frame depth only · pixel art stepped, never scaled or faded · boot once per launch, skippable, ends on the logo · every press has a sound · no tagline, dedication or version on any working screen · app name biggest, Rommel as the signature, no ROWMI wordmark in app chrome · contrast 4.5 : 1 · 44 px targets · all four states designed · no dark patterns.

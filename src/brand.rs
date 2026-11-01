@@ -122,13 +122,10 @@ pub unsafe fn lockup(hdc: HDC, x: i32, y: i32, u: i32, f: Face, p: &Pal, word: u
     wordmark(hdc, x + 12 * u, y + 4 * u, u, word);
 }
 
-/// The 8x8 "alert" emote from icons/ (tan), drawn with its top-left at (x, y).
+/// The `!` over Rommel at (x, y): a 2 x 3 bar, a gap, a 2 x 1 dot, in columns 4 and 5, one empty row above his ears.
 pub unsafe fn emote_alert(hdc: HDC, x: i32, y: i32, u: i32) {
-    for (row, s) in ["..rrrr..", "..rrrr..", "...rr...", "...rr...", "...rr...", "........", "...rr...", "...rr..."].iter().enumerate() {
-        for (col, ch) in s.bytes().enumerate() {
-            if ch == b'r' { fill(hdc, &rect(x + col as i32 * u, y + row as i32 * u, u, u), TAN) }
-        }
-    }
+    fill(hdc, &rect(x + 4 * u, y - 6 * u, 2 * u, 3 * u), TAN);
+    fill(hdc, &rect(x + 4 * u, y - 2 * u, 2 * u, u), TAN);
 }
 
 /// App icon as logo/app-icons/*.svg: a 12x12 shell square with Rommel at (1,1). `size` is the pixel

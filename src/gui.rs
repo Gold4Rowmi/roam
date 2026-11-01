@@ -340,7 +340,7 @@ unsafe extern "system" fn about_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
             let mut c: RECT = zeroed();
             GetClientRect(hwnd, &mut c);
             brand::fill(hdc, &c, PAPER);
-            title_band(hdc, Face::Idle);
+            about_band(hdc);
             plex_text(hdc, &prect(16, 84, 328, 20), 0, &format!("Version {}", update::VERSION), BLACK, false);
             plex_text(hdc, &brand::rect(px(16), c.bottom - px(112), px(328), px(20)), 0, TAGLINE, BLACK, false);
             plex_text(hdc, &brand::rect(px(16), c.bottom - px(88), px(328), px(16)), 1, DEDICATION, MUTED, false);
@@ -657,7 +657,7 @@ unsafe fn drag(hwnd: HWND, msg: u32, lp: LPARAM) {
 
 fn in_rommel(lp: LPARAM) -> bool {
     let (x, y) = lparam_xy(lp);
-    let r = prect(16, 17, 30, 30);
+    let r = prect(16, 12, 40, 40);
     x >= r.left && x < r.right && y >= r.top && y < r.bottom
 }
 
@@ -680,7 +680,7 @@ unsafe fn paint_bubbles(hdc: HDC, u: i32) {
     for (i, (dx, size)) in [(11, 1), (14, 2), (9, 2), (12, 1)].into_iter().enumerate() {
         let rise = (f - i as i32 * 5).rem_euclid(20) + if f > i as i32 * 5 { 0 } else { 99 };
         if rise > 14 { continue }
-        let y = px(17) + (10 - rise) * u;
+        let y = px(12) + (10 - rise) * u;
         if y < 0 { continue }
         let r = brand::rect(px(16) + dx * u, y, size * u, size * u);
         brand::fill(hdc, &r, BLACK);
@@ -690,13 +690,26 @@ unsafe fn paint_bubbles(hdc: HDC, u: i32) {
 
 // ---------- painting ----------
 
-/// Lockup at u = 3 on the left, then the app name as a small Silkscreen 16 label on the wordmark's baseline.
-unsafe fn title_band(hdc: HDC, f: Face) {
+unsafe fn band(hdc: HDC) {
     brand::fill(hdc, &prect(0, 0, 360, 64), MINT);
-    let (x, y, u) = (px(16), px(17), px(3));
-    brand::lockup(hdc, x, y, u, f, &LIGHT, BLACK);
-    pixel_text(hdc, &brand::rect(x + 39 * u + px(12), y + 9 * u - 5 * px(2), px(160), px(16)), 16, APP, BLACK, false);
     brand::fill(hdc, &prect(0, 64, 360, 1), GREY);
+}
+
+/// The working header: the app is the hero, Rommel the signature, no wordmark. Rommel at 40 px shares
+/// Silkscreen 32's 4 px unit, and the name sits on his chin line.
+unsafe fn title_band(hdc: HDC, f: Face) {
+    band(hdc);
+    let (x, y, u) = (px(16), px(12), px(4));
+    brand::draw_rommel(hdc, x, y, u, f, &LIGHT);
+    pixel_text(hdc, &brand::rect(x + 12 * u, y + 4 * u, px(280), px(32)), 32, APP, BLACK, false);
+}
+
+/// The wordmark may only appear on boot and here. Lockup at u = 3, the name as a Silkscreen 16 label on its baseline.
+unsafe fn about_band(hdc: HDC) {
+    band(hdc);
+    let (x, y, u) = (px(16), px(17), px(3));
+    brand::lockup(hdc, x, y, u, Face::Idle, &LIGHT, BLACK);
+    pixel_text(hdc, &brand::rect(x + 39 * u + px(12), y + 9 * u - 5 * px(2), px(160), px(16)), 16, APP, BLACK, false);
 }
 
 /// Draws off screen, then copies in one go: painting in place flashes every fill.
@@ -727,7 +740,7 @@ unsafe fn paint_window(hdc: HDC) {
     } else {
         brand::fill(hdc, &prect(0, 0, 360, HEIGHT + (MAX_PEERS as i32 + 1) * ROW), PAPER);
         title_band(hdc, face());
-        if EGG.load(Relaxed) > 0 { paint_bubbles(hdc, px(3)) }
+        if EGG.load(Relaxed) > 0 { paint_bubbles(hdc, px(4)) }
         // launch bar: a mint block stepping along the band's foot while we look for the other PC
         if STARTED.load(Relaxed) && TRAY_STATE.load(Relaxed) == TRAY_OFF {
             brand::fill(hdc, &prect(0, 60, 360, 4), BLACK);
@@ -753,7 +766,7 @@ unsafe fn paint_boot(hdc: HDC, tick: i32) {
     if rows > 0 { brand::fill(hdc, &brand::rect(0, full.bottom - full.bottom * rows / 40, full.right, full.bottom), MINT) }
     let f = if (10..15).contains(&tick) { Face::Alert } else { Face::Idle };
     brand::draw_rommel(hdc, x, y, u, f, &LIGHT);
-    if f == Face::Alert { brand::emote_alert(hdc, x + u, y - 9 * u, u) }
+    if f == Face::Alert { brand::emote_alert(hdc, x, y, u) }
     let drop = match tick { 1 | 2 => -18, 3 | 4 => -12, 5 | 6 => -6, 7 => 1, _ => 0 };
     brand::wordmark(hdc, x + 12 * u, y + (4 + drop) * u, u, BLACK);
     if tick >= 17 { pixel_text(hdc, &brand::rect(x + 12 * u, y + 12 * u, 27 * u, px(24)), 24, APP, BLACK, false) }
