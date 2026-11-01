@@ -1,0 +1,81 @@
+/* ROWMI design tokens, v1.0. Playful tools with a lot of bark. Made in memory of Rommel.
+   Use the token, never the hex, so dark mode and app shells work for free. */
+:root {
+  /* Core palette */
+  --paper: #ECEEF1;            /* the ground of everything */
+  --rommel-black: #16181D;     /* his coat: text, the dog, filled buttons */
+  --rommel-tan: #D9893B;       /* his markings, and ROWMI's own colour */
+  --cartridge-grey: #C9CED6;   /* frames, borders, the 2 px pixel drop */
+  --deep-tan: #9C4F12;         /* tan for text on Paper */
+  --cursor-blue: #2F6FE0;      /* selection and keyboard focus only */
+  --tongue-pink: #E07A6B;      /* Rommel only */
+  --tan-soft: #F8E2CC;         /* Rommel's markings when he sits on Tan */
+
+  /* Surfaces and text, named by job */
+  --surface-base: #ECEEF1;  --surface-raised: #FFFFFF;  --surface-sunken: #F4F5F7;
+  --grid: #DDE1E6;          --border: #C9CED6;          --border-strong: #5B6270;
+  --text-high: #16181D;     --text-medium: #5B6270;
+  --ink: #16181D;           --on-ink: #F4F5F7;
+  --rust: #D9893B;          --rust-text: #9C4F12;       --rust-soft: #F8E2CC;
+  --signal: #2F6FE0;        --signal-soft: #E3ECFC;
+
+  /* Meaning colours: meaning beats brand, and never colour alone */
+  --success: #1F7A44;  --success-soft: #DDF1E4;
+  --warning: #8A5A00;  --warning-soft: #FBEBC8;
+  --danger:  #C0352F;  --danger-soft:  #FBE1DF;  --on-danger: #FFFFFF;
+
+  /* App shells: one per app. Set --shell and --shell-text once at the root of each app.
+     Text ON a shell is always --ink. --shell-text is the shell's deep tone for words on Paper. */
+  --shell-edgehop:   #2FC7A1;  --shell-edgehop-deep:   #0E6E57;   /* Mint */
+  --shell-saveforge: #F0548C;  --shell-saveforge-deep: #A8174F;   /* Berry */
+  --shell-minibot:   #9BCB3B;  --shell-minibot-deep:   #4A6B12;   /* Lime */
+  --shell-vitacart:  #F4C430;  --shell-vitacart-deep:  #7A5A00;   /* Gold */
+  --shell: var(--shell-edgehop);  --shell-text: var(--shell-edgehop-deep);
+
+  /* Type: two faces, two jobs */
+  --f-pixel: 'Silkscreen', ui-monospace, monospace;      /* titles, labels, short words. Sizes 8, 16, 24, 32, 64 only */
+  --f-ui: 'IBM Plex Mono', ui-monospace, monospace;      /* everything people read or type. Weights 400 and 600 only */
+
+  /* Space and shape: 4 px scale, pixel art on 8 */
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px; --s8: 64px;
+  --r-outer: 6px; --r-inner: 4px;
+  --frame: 0 2px 0 var(--border);   /* the only depth: 1 px border + 2 px hard drop. No glows, no gradients. */
+
+  /* Motion. UI chrome may spring; pixel art moves in whole pixels on frame ticks and never scales, eases or fades. */
+  --t-fast: 100ms; --t-mid: 200ms; --t-slow: 300ms;
+  --ease: cubic-bezier(.2, .8, .2, 1);              /* menus, slides */
+  --ease-spring: cubic-bezier(.34, 1.56, .64, 1);   /* cursor, switches, pops */
+  --t-cursor: 240ms;
+  --frame-tick: 16.667ms;                           /* 60 Hz; pixel art animates with steps() in multiples of this */
+}
+
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --surface-base: #121418;  --surface-raised: #1A1D22;  --surface-sunken: #0E1013;  --grid: #1B1E24;
+  --border: #2E333B;        --border-strong: #8A919C;
+  --text-high: #ECEEF1;     --text-medium: #9EA5B0;
+  --ink: #F4F5F7;           --on-ink: #16181D;
+  --rust: #E8A96B;          --rust-text: #E8A96B;       --rust-soft: #3A2A1C;
+  --signal: #7AA7F2;        --signal-soft: #1D2A40;
+  --success: #6CC28F;  --success-soft: #17301F;
+  --warning: #E9B65A;  --warning-soft: #33290F;
+  --danger:  #F08A84;  --danger-soft:  #3A1C1B;  --on-danger: #16181D;
+  --shell-text: var(--shell);   /* on dark, shell-coloured words use the shell itself */
+  color-scheme: dark;
+}}
+:root[data-theme="dark"] {
+  --surface-base: #121418;  --surface-raised: #1A1D22;  --surface-sunken: #0E1013;  --grid: #1B1E24;
+  --border: #2E333B;        --border-strong: #8A919C;
+  --text-high: #ECEEF1;     --text-medium: #9EA5B0;
+  --ink: #F4F5F7;           --on-ink: #16181D;
+  --rust: #E8A96B;          --rust-text: #E8A96B;       --rust-soft: #3A2A1C;
+  --signal: #7AA7F2;        --signal-soft: #1D2A40;
+  --success: #6CC28F;  --success-soft: #17301F;
+  --warning: #E9B65A;  --warning-soft: #33290F;
+  --danger:  #F08A84;  --danger-soft:  #3A1C1B;  --on-danger: #16181D;
+  --shell-text: var(--shell);
+  color-scheme: dark;
+}
+
+/* Rommel never changes colour. On dark grounds he keeps black, tan and pink and gets a 1 px Paper outline (see logo/mark). */
+.rowmi-pixel { font-family: var(--f-pixel); -webkit-font-smoothing: none; font-smooth: never; font-weight: 400; }
+.rowmi-px { shape-rendering: crispEdges; image-rendering: pixelated; }

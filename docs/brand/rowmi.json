@@ -1,0 +1,147 @@
+{
+  "name": "ROWMI",
+  "version": "1.0",
+  "tagline": "Playful tools with a lot of bark.",
+  "dedication": "Made in memory of Rommel.",
+  "color": {
+    "paper": "#ECEEF1",
+    "rommelBlack": "#16181D",
+    "rommelTan": "#D9893B",
+    "cartridgeGrey": "#C9CED6",
+    "deepTan": "#9C4F12",
+    "cursorBlue": "#2F6FE0",
+    "cursorBlueDark": "#7AA7F2",
+    "tonguePink": "#E07A6B",
+    "tanSoft": "#F8E2CC"
+  },
+  "shells": {
+    "edgehop": {
+      "name": "Mint",
+      "hex": "#2FC7A1",
+      "deep": "#0E6E57",
+      "blackOnShell": 8.3
+    },
+    "saveforge": {
+      "name": "Berry",
+      "hex": "#F0548C",
+      "deep": "#A8174F",
+      "blackOnShell": 5.4
+    },
+    "minibot": {
+      "name": "Lime",
+      "hex": "#9BCB3B",
+      "deep": "#4A6B12",
+      "blackOnShell": 9.3
+    },
+    "vitacart": {
+      "name": "Gold",
+      "hex": "#F4C430",
+      "deep": "#7A5A00",
+      "blackOnShell": 10.8
+    }
+  },
+  "meaning": {
+    "success": "#1F7A44",
+    "warning": "#8A5A00",
+    "danger": "#C0352F"
+  },
+  "type": {
+    "pixel": {
+      "family": "Silkscreen",
+      "sizes": [
+        8,
+        16,
+        24,
+        32,
+        64
+      ],
+      "weights": [
+        400,
+        700
+      ],
+      "source": "https://fonts.google.com/specimen/Silkscreen"
+    },
+    "ui": {
+      "family": "IBM Plex Mono",
+      "weights": [
+        400,
+        600
+      ],
+      "body": 15,
+      "bodyCompact": 14,
+      "lead": 20,
+      "source": "https://fonts.google.com/specimen/IBM+Plex+Mono"
+    }
+  },
+  "space": [
+    4,
+    8,
+    12,
+    16,
+    24,
+    32,
+    48,
+    64
+  ],
+  "radius": {
+    "outer": 6,
+    "inner": 4
+  },
+  "frame": "1px border + 2px hard drop, no glows, no gradients",
+  "logo": {
+    "unit": "u = one Rommel pixel",
+    "mark": "10x10 u",
+    "wordmark": "27x5 u",
+    "lockup": "word at x=12 y=4 (chin line), 2 u clear space",
+    "rule": "whole steps only, never fractional u"
+  },
+  "motion": {
+    "cursorGlide": "240ms spring, squash on landing, breathes while waiting",
+    "squish": "80ms down, 160ms spring back",
+    "snap": "180ms, overshoots",
+    "pageSlide": "260ms, 24px",
+    "launchIris": "300ms, 6 frames",
+    "popSparkle": "240ms two-pixel hop, 4-frame sparks",
+    "bonk": "300ms, 5 frames",
+    "blink": "every 4s, 120ms",
+    "detents": "11 clicks, rising pitch",
+    "pixelArtRule": "whole pixels on 60Hz frame ticks; never scale, ease or fade"
+  },
+  "boot": {
+    "duration": 1100,
+    "screen": "64x40 dots, one dot per logo pixel",
+    "timeline": {
+      "0": "four claw taps start; the word steps down six rows per tap at 0/110/220/330ms",
+      "330": "lands on the chin line with the fourth tap, one-dot bump",
+      "420": "ping: G5 then C6",
+      "510": "on the ring, all at once: Rommel alert with !, shell colour rises 4 rows per frame for 10 frames",
+      "800": "Rommel idle: the real logo",
+      "900": "app name in Silkscreen 24 under the lockup",
+      "1100": "done"
+    },
+    "rules": [
+      "once per launch, never on focus or resume",
+      "any input after 300ms skips with a hard cut",
+      "never a loader: draw the app behind it; if not ready, hold the shell with the launch bar",
+      "reduced motion: finished screen for 800ms, keep the sound",
+      "it ends on the logo"
+    ],
+    "sound": "sounds/startup.wav (Trot & ping)"
+  },
+  "rommel": {
+    "poses": {
+      "idle": "the logo, the default everywhere",
+      "alert": "something new",
+      "happy": "success",
+      "sad": "an error",
+      "sleepy": "offline",
+      "wink": "a tip",
+      "grin": "bubbles"
+    },
+    "rule": "Idle is the logo. Other faces are reactions under a second, or states. Never decoration. One Rommel per screen. He reacts, never talks, never guilts.",
+    "onDark": "stays black, tan and pink with a 1px Paper outline; never white"
+  },
+  "easterEgg": {
+    "bubbles": "type 'bubbles' or tap Rommel five times: bubbles rise for 7s, he grins and snaps at any that pass his mouth. Never on a timer, never blocks input."
+  }
+}

@@ -1,0 +1,58 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash # pipefail, so a failure piped into tee still fails the step
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag must match Cargo.toml
+        run: |
+          grep -q "^version = \"${GITHUB_REF_NAME#v}\"" Cargo.toml || { echo "Tag $GITHUB_REF_NAME does not match Cargo.toml" | tee -a build.log; exit 1; }
+
+      - name: Test
+        run: cargo test --locked 2>&1 | tee -a build.log
+
+      - name: Build
+        run: cargo build --release --locked 2>&1 | tee -a build.log
+
+      # before anything from outside this repo's lockfile runs, and the key is only in this step
+      - name: Sign
+        env:
+          ROAM_SIGNING_KEY: ${{ secrets.ROAM_SIGNING_KEY }}
+        run: cargo run --release --locked --example sign -- target/release/roam.exe "${GITHUB_REF_NAME#v}" 2>&1 | tee -a build.log
+
+      - name: Installer
+        run: |
+          choco install innosetup -y --no-progress 2>&1 | tee -a build.log
+          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "//DAppVersion=${GITHUB_REF_NAME#v}" installer.iss 2>&1 | tee -a build.log
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd target/release
+          sha256sum roam.exe roam.exe.sig roam-setup.exe > SHA256SUMS.txt
+          gh release create "$GITHUB_REF_NAME" roam.exe roam.exe.sig roam-setup.exe SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" --title "Roam ${GITHUB_REF_NAME#v}" --generate-notes 2>&1 | tee -a ../../build.log
+
+      # a prerelease, so the updater's releases/latest never sees it
+      - name: Publish the build log on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          touch build.log
+          gh release delete ci-failure --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          gh release create ci-failure build.log --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "Last failed build" --notes "Failed on $GITHUB_REF_NAME. See build.log."
