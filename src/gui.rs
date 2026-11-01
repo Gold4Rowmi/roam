@@ -99,6 +99,7 @@ static ERR: AtomicBool = AtomicBool::new(false); // the code box is in its error
 static BONK_AT: AtomicU8 = AtomicU8::new(0);  // bonk frame showing, 1..=5, 0 = at rest
 static EDIT_PROC: AtomicUsize = AtomicUsize::new(0); // the code box's original window procedure
 static STARTED: AtomicBool = AtomicBool::new(false);
+static HEELED: AtomicBool = AtomicBool::new(false); // the setup screen says so until the next connection
 static BOOT: AtomicU8 = AtomicU8::new(0); // boot tick 1..=20 while booting, 0 when done
 static FACE: AtomicU8 = AtomicU8::new(0);
 static TRAY_STATE: AtomicU8 = AtomicU8::new(TRAY_OFF);
@@ -439,11 +440,12 @@ unsafe fn show_peers(hwnd: HWND) {
         brand::play(brand::TAG);
         react(hwnd, Face::Alert, 800);
     }
-    status(&match list.iter().find(|f| f.wants) {
+    let text = match list.iter().find(|f| f.wants) {
         Some(f) => format!("{} wants to use this PC's mouse and keyboard. Press Allow, or ignore it.", f.name),
         None if list.is_empty() => SETUP_HELP.to_string(),
         None => "Found a trusted PC. Press its button, or right-click it to forget it.".to_string(),
-    });
+    };
+    status(&if HEELED.load(Relaxed) { format!("Heeled. {text}") } else { text });
 }
 
 /// Right-click, or the menu key, on a found PC: Forget it, so it is no longer found or trusted.
@@ -923,10 +925,12 @@ unsafe fn start(hwnd: HWND, id: isize) {
     PEERS.lock().unwrap().clear();
     show_peers(hwnd); // hides the buttons; the status below replaces its text
     SetTimer(hwnd, TIMER_BAR, 120, None);
+    HEELED.store(false, Relaxed);
+    let gen = win::begin();
     status(if id == ID_HOST { "Looking for the other PC. This window tucks into the tray once they connect." }
            else { "Waiting. Type this code on the other PC and press Roam from this PC." });
     std::thread::spawn(move || {
-        let r = std::panic::catch_unwind(|| if id == ID_HOST { win::host(&code) } else { win::client(&code) });
+        let r = std::panic::catch_unwind(|| if id == ID_HOST { win::host(&code, gen) } else { win::client(&code, gen) });
         if let Err(e) = r {
             let why = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
             brand::play(brand::ERROR);
@@ -936,11 +940,24 @@ unsafe fn start(hwnd: HWND, id: isize) {
     });
 }
 
-/// Disconnect by restarting the program: a fresh instance comes up at the setup screen.
-unsafe fn stop() {
+/// Heel: end the connection and put this same window back on the setup screen, saying so.
+unsafe fn stop(hwnd: HWND) {
     win::shutdown();
-    let _ = std::process::Command::new(std::env::current_exe().unwrap()).spawn();
-    DestroyWindow(MAIN.load(Relaxed) as HWND);
+    KillTimer(hwnd, TIMER_BAR);
+    Shell_NotifyIconW(NIM_DELETE, &nid(0));
+    STARTED.store(false, Relaxed);
+    TRAY_STATE.store(TRAY_OFF, Relaxed);
+    OFFLINE.store(false, Relaxed);
+    HEELED.store(true, Relaxed);
+    ShowWindow(GetDlgItem(hwnd, ID_STOP as i32), SW_HIDE);
+    ShowWindow(GetDlgItem(hwnd, ID_HOST as i32), SW_SHOW);
+    ShowWindow(GetDlgItem(hwnd, ID_CLIENT as i32), SW_SHOW);
+    SendMessageW(GetDlgItem(hwnd, ID_CODE as i32), EM_SETREADONLY, 0, 0);
+    show(hwnd);
+    SetFocus(GetDlgItem(hwnd, ID_CODE as i32));
+    start_finder();
+    show_peers(hwnd);
+    react(hwnd, Face::Happy, 800);
 }
 
 unsafe fn quit(hwnd: HWND) {
@@ -959,7 +976,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let id = (wp & 0xFFFF) as isize;
             match id {
                 ID_HOST | ID_CLIENT => start(hwnd, id),
-                ID_STOP => { brand::play(brand::BACK); stop() }
+                ID_STOP => { brand::play(brand::BACK); stop(hwnd) }
                 ID_UPDATE => {
                     brand::play(brand::CONFIRM);
                     SetFocus(GetDlgItem(hwnd, ID_CODE as i32)); // a disabled button can't keep it
@@ -1020,7 +1037,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_CLOSE_NOW => { quit(hwnd); 0 }
         WM_SYSCOMMAND if wp & 0xFFF0 == SC_ABOUT => { open_about(hwnd); 0 }
         WM_HEEL => {
-            if STARTED.load(Relaxed) { brand::play(brand::BACK); stop() }
+            if STARTED.load(Relaxed) { brand::play(brand::BACK); stop(hwnd) }
             0
         }
         WM_ARRIVED => { show_spark(hwnd, wp as isize as i32, lp as i32); 0 }
@@ -1072,7 +1089,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             DestroyMenu(m);
             match pick as usize {
                 MENU_SHOW => { brand::play(brand::CLICK); show(hwnd) }
-                MENU_STOP => { brand::play(brand::BACK); stop() }
+                MENU_STOP => { brand::play(brand::BACK); stop(hwnd) }
                 MENU_ABOUT => { show(hwnd); open_about(hwnd) }
                 MENU_QUIT => { brand::play(brand::OFF); quit(hwnd) }
                 _ => {}

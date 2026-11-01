@@ -67,7 +67,7 @@ The signing key is the Actions secret `ROAM_SIGNING_KEY`; the public half is in 
 ## GUI notes (`gui.rs`)
 - Hand-drawn Win32: STATIC and EDIT controls plus owner-drawn buttons. Worker threads never touch the UI; they write to `PENDING` and post `WM_REFRESH`.
 - Boot runs once per launch (55 ms ticks, about 1.1 s), skippable after 300 ms, honours the Windows reduced-motion setting, ends on Idle Rommel.
-- Window hides to the tray when the PCs connect and returns when the link drops. Heel (button or tray menu) restarts the process.
+- Window hides to the tray when the PCs connect and returns when the link drops. Heel (button or tray menu) ends the connection in place and returns the same window to the setup screen, with Rommel happy and a "Heeled." status that stays until the next connection. `win::shutdown` bumps `SESSION`, each connection thread stops within about 500 ms, the hooks and raw input are removed, and `ONE` makes the next connection wait until the last has finished.
 - Tray icon is Rommel on a colour: Mint = mouse here, Paper = mouse on the other PC, Cartridge Grey with sleepy Rommel = not connected.
 - Layout panel draws the real monitors (primary first) and a draggable "Other" box that snaps to the nearest monitor edge.
 - `layout()` and `load_type()` hold all sizes and fonts, and rerun on `WM_DPICHANGED`. The EDIT box must stay taller than its font's line or it paints over its frame.

@@ -5,9 +5,9 @@ use crate::trust;
 use std::mem::{size_of, zeroed};
 use std::net::{SocketAddr, UdpSocket};
 use std::ptr::{copy_nonoverlapping, null, null_mut};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering::Relaxed};
 use std::sync::mpsc::{channel, Sender};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::System::DataExchange::*;
@@ -71,7 +71,7 @@ pub fn load_target(line: &str, mons: &[RECT]) {
 
 /// If `pt` is on `edge`, its position along that edge as 0..1.
 fn at_edge(edge: u8, pt: POINT) -> Option<f32> {
-    let (l, t, w, h) = *SCREEN.get().unwrap();
+    let (l, t, w, h) = *SCREEN.lock().unwrap();
     let (along_y, along_x) = ((pt.y - t) as f32 / h as f32, (pt.x - l) as f32 / w as f32);
     // only along this monitor's own span, so a neighbouring monitor's edge doesn't count
     let (in_y, in_x) = (pt.y >= t && pt.y < t + h, pt.x >= l && pt.x < l + w);
@@ -86,7 +86,7 @@ fn at_edge(edge: u8, pt: POINT) -> Option<f32> {
 
 /// A point 2px inside `edge`, at position `frac` along it.
 fn near_edge(edge: u8, frac: f32) -> (i32, i32) {
-    let (l, t, w, h) = *SCREEN.get().unwrap();
+    let (l, t, w, h) = *SCREEN.lock().unwrap();
     let (x, y) = (l + (frac * w as f32) as i32, t + (frac * h as f32) as i32);
     match edge { 0 => (l + w - 3, y), 1 => (l + 2, y), 2 => (x, t + 2), _ => (x, t + h - 3) }
 }
@@ -95,11 +95,20 @@ fn near_edge(edge: u8, frac: f32) -> (i32, i32) {
 fn pushing_out(edge: u8, dx: i16, dy: i16) -> bool {
     match edge { 0 => dx > 0, 1 => dx < 0, 2 => dy < 0, _ => dy > 0 }
 }
-static LINK: OnceLock<Link> = OnceLock::new();
-static SCREEN: OnceLock<(i32, i32, i32, i32)> = OnceLock::new(); // virtual screen x, y, w, h
+static LINK: Mutex<Option<Arc<Link>>> = Mutex::new(None);
+static SCREEN: Mutex<(i32, i32, i32, i32)> = Mutex::new((0, 0, 0, 0)); // virtual screen x, y, w, h
 static LAST_PING: Mutex<Option<Instant>> = Mutex::new(None);
+static SESSION: AtomicUsize = AtomicUsize::new(0); // bumping it ends the running connection's threads
+static ONE: Mutex<()> = Mutex::new(());            // held for a whole connection: the next waits for the last to finish
 
-fn init(secret: &str, sock: UdpSocket, role: u8, peer: Option<SocketAddr>) -> &'static Link {
+/// Taken before each use, never held across a send: the hooks must not wait on anything.
+fn link() -> Option<Arc<Link>> { LINK.lock().unwrap().clone() }
+fn live(gen: usize) -> bool { SESSION.load(Relaxed) == gen }
+
+/// Called on the UI thread when a role is picked, so a Heel straight after it still counts.
+pub fn begin() -> usize { SESSION.fetch_add(1, Relaxed) + 1 }
+
+fn init(secret: &str, sock: UdpSocket, role: u8, peer: Option<SocketAddr>) -> Arc<Link> {
     // host: the chosen monitor; client: its whole desktop
     SIDE.get_or_init(|| {
         let (tx, rx) = channel::<Job>();
@@ -107,29 +116,41 @@ fn init(secret: &str, sock: UdpSocket, role: u8, peer: Option<SocketAddr>) -> &'
         tx
     });
     let target = TARGET.lock().unwrap().1;
-    SCREEN.get_or_init(|| if role == HOST && target.2 > 0 { target } else { unsafe {
+    *SCREEN.lock().unwrap() = if role == HOST && target.2 > 0 { target } else { unsafe {
         (GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN),
          GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN))
-    }});
-    LINK.get_or_init(|| Link::new(secret, sock, role, peer))
+    }};
+    let link = Arc::new(Link::new(secret, sock, role, peer));
+    *LINK.lock().unwrap() = Some(link.clone());
+    link
+}
+
+/// Back to no connection. Last thing a connection does, so nothing can leave input swallowed.
+fn clean_up() {
+    *LINK.lock().unwrap() = None;
+    *LAST_PING.lock().unwrap() = None;
+    REMOTE.store(false, Relaxed);
+    MODS.store(0, Relaxed);
 }
 
 // ---------- host ----------
 
-pub fn host(secret: &str) {
+pub fn host(secret: &str, gen: usize) {
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    if !live(gen) { return }
     let sock = UdpSocket::bind("0.0.0.0:0").unwrap();
     sock.set_broadcast(true).unwrap(); // pings go to the whole LAN until the client answers
     let link = init(secret, sock, HOST, Some(BROADCAST));
-    let code = secret.to_string();
-    std::thread::spawn(move || host_recv(link, &code));
-    std::thread::spawn(move || loop {
-        link.send(&Msg::Ping(name()));
+    let (code, l) = (secret.to_string(), link.clone());
+    let receiver = std::thread::spawn(move || host_recv(&l, &code, gen));
+    let l = link.clone();
+    let pinger = std::thread::spawn(move || while live(gen) {
+        l.send(&Msg::Ping(name()));
         std::thread::sleep(Duration::from_millis(500));
     });
     urgent(); // this thread runs the hooks every mouse move on this PC passes through
     unsafe {
-        SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), null_mut(), 0);
-        SetWindowsHookExW(WH_KEYBOARD_LL, Some(key_hook), null_mut(), 0);
+        let hooks = [SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), null_mut(), 0), SetWindowsHookExW(WH_KEYBOARD_LL, Some(key_hook), null_mut(), 0)];
         // hidden window that receives WM_INPUT; hooks only swallow, raw input gives true deltas
         let cls: Vec<u16> = "STATIC\0".encode_utf16().collect();
         let hwnd = CreateWindowExW(0, cls.as_ptr(), null(), 0, 0, 0, 0, 0, null_mut(), null_mut(), null_mut(), null());
@@ -138,7 +159,8 @@ pub fn host(secret: &str) {
         status("Looking for the other PC...");
         let (mut abs_x, mut abs_y) = (None, None);
         let mut msg: MSG = zeroed();
-        while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
+        let tick = SetTimer(null_mut(), 0, 200, None); // an idle GetMessage would never notice a Heel
+        while live(gen) && GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
             if msg.message == WM_INPUT && REMOTE.load(Relaxed) {
                 let mut raw: RAWINPUT = zeroed();
                 let mut sz = size_of::<RAWINPUT>() as u32;
@@ -147,7 +169,7 @@ pub fn host(secret: &str) {
                     let m = raw.data.mouse;
                     let (mut dx, mut dy) = (m.lLastX, m.lLastY);
                     if m.usFlags & 1 != 0 { // MOUSE_MOVE_ABSOLUTE (some touchpads/RDP): 0..65535 coords
-                        let (_, _, w, h) = *SCREEN.get().unwrap();
+                        let (_, _, w, h) = *SCREEN.lock().unwrap();
                         dx = abs_x.map_or(0, |p: i32| (m.lLastX - p) * w / 65535);
                         dy = abs_y.map_or(0, |p: i32| (m.lLastY - p) * h / 65535);
                         (abs_x, abs_y) = (Some(m.lLastX), Some(m.lLastY));
@@ -164,19 +186,29 @@ pub fn host(secret: &str) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        KillTimer(null_mut(), tick);
+        for h in hooks { UnhookWindowsHookEx(h); }
+        let gone = RAWINPUTDEVICE { usUsagePage: 1, usUsage: 2, dwFlags: RIDEV_REMOVE, hwndTarget: null_mut() };
+        RegisterRawInputDevices(&gone, 1, size_of::<RAWINPUTDEVICE>() as u32);
+        DestroyWindow(hwnd);
     }
+    let _ = receiver.join();
+    let _ = pinger.join();
+    clean_up();
 }
 
 fn client_up() -> bool {
     LAST_PING.lock().unwrap().is_some_and(|t| t.elapsed() < Duration::from_secs(2))
 }
 
-fn host_recv(link: &Link, code: &str) {
+fn host_recv(link: &Link, code: &str, gen: usize) {
     urgent();
     let (start, mut linked, mut warned, mut peer) = (Instant::now(), false, false, String::new());
-    loop {
+    while live(gen) {
         let mut bye = false;
-        match link.recv() {
+        let msg = link.recv();
+        if !live(gen) { break }
+        match msg {
             Some(Msg::Leave(f)) => take_back(f),
             Some(Msg::Clip(s)) => later(move || clip_set(&s)),
             Some(Msg::Ping(n)) => { *LAST_PING.lock().unwrap() = Some(Instant::now()); peer = n }
@@ -209,17 +241,18 @@ fn host_recv(link: &Link, code: &str) {
     }
 }
 
-/// Called when the window closes: give the client its input back before we vanish.
+/// Heel or quit: give the client its input back, say goodbye, and end this connection's threads.
 pub fn shutdown() {
-    if let Some(l) = LINK.get() {
-        if REMOTE.load(Relaxed) { l.send(&Msg::Leave(0.5)) }
+    SESSION.fetch_add(1, Relaxed);
+    if let Some(l) = LINK.lock().unwrap().take() {
+        if REMOTE.swap(false, Relaxed) { l.send(&Msg::Leave(0.5)) }
         l.send(&Msg::Bye);
     }
 }
 
 fn hand_over(frac: f32) {
     if !client_up() { return } // cursor just stops at the edge; the status line already says why
-    let link = LINK.get().unwrap();
+    let Some(link) = link() else { return };
     link.send(&Msg::Enter(EDGE.load(Relaxed), frac));
     REMOTE.store(true, Relaxed);
     MODS.store(0, Relaxed);
@@ -258,18 +291,18 @@ unsafe extern "system" fn mouse_hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESU
 static MODS: AtomicU8 = AtomicU8::new(0); // bit0 ctrl, bit1 alt, tracked here because swallowed keys never reach GetAsyncKeyState
 
 unsafe extern "system" fn key_hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    if code >= 0 && REMOTE.load(Relaxed) {
+    if let (true, true, Some(link)) = (code >= 0, REMOTE.load(Relaxed), link()) {
         let k = &*(lp as *const KBDLLHOOKSTRUCT);
         let up = k.flags & LLKHF_UP != 0;
         let bit = match k.vkCode as u16 { VK_CONTROL | VK_LCONTROL | VK_RCONTROL => 1, VK_MENU | VK_LMENU | VK_RMENU => 2, _ => 0 };
         if bit != 0 { if up { MODS.fetch_and(!bit, Relaxed); } else { MODS.fetch_or(bit, Relaxed); } }
         if k.vkCode as u16 == VK_ESCAPE && !up && MODS.load(Relaxed) == 3 { // Ctrl+Alt+Esc: panic button
             MODS.store(0, Relaxed);
-            LINK.get().unwrap().send(&Msg::Leave(0.5)); // tells the client to release its held keys
+            link.send(&Msg::Leave(0.5)); // tells the client to release its held keys
             take_back(0.5);
             return 1;
         }
-        LINK.get().unwrap().send(&Msg::Key {
+        link.send(&Msg::Key {
             vk: k.vkCode as u8, scan: k.scanCode as u8,
             up: k.flags & LLKHF_UP != 0, ext: k.flags & LLKHF_EXTENDED != 0,
         });
@@ -280,14 +313,17 @@ unsafe extern "system" fn key_hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT
 
 // ---------- client ----------
 
-pub fn client(secret: &str) {
+pub fn client(secret: &str, gen: usize) {
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    if !live(gen) { return }
     // an updated or restarted copy, or the finder, can still hold the port for a moment
     let sock = bind_lan().expect("port 47321 is in use. Is another copy of Roam running?");
     let link = init(secret, sock, CLIENT, None);
     urgent();
-    std::thread::spawn(move || loop {
+    let l = link.clone();
+    let pinger = std::thread::spawn(move || while live(gen) {
         std::thread::sleep(Duration::from_millis(500));
-        link.send(&Msg::Ping(name()));
+        l.send(&Msg::Ping(name()));
     });
     let mut edge = 0u8; // host's edge; we enter and leave through the opposite one
     status("Waiting for the other PC. Type this code there and press Roam from this PC.");
@@ -296,8 +332,9 @@ pub fn client(secret: &str) {
     let mut held_buttons = 0u32; // MOUSEEVENTF_*UP flags to send
     // nothing heard yet: start already timed out, so "Connected" waits for a real ping
     let (mut active, mut last_seen, mut linked, mut peer) = (false, Instant::now() - Duration::from_secs(3), false, String::new());
-    loop {
+    while live(gen) {
         let msg = link.recv();
+        if !live(gen) { break }
         if link.mismatch() { status(VERSION_MISMATCH) }
         let (bye, was_linked) = (matches!(msg, Some(Msg::Bye)), linked);
         match &msg {
@@ -343,7 +380,8 @@ pub fn client(secret: &str) {
                     if let Some(frac) = at_edge(edge, p) {
                         active = false;
                         release(&mut held_keys, &mut held_buttons);
-                        later(move || if let Some(c) = clip_get() { link.send(&Msg::Clip(c)) });
+                        let l = link.clone();
+                        later(move || if let Some(c) = clip_get() { l.send(&Msg::Clip(c)) });
                         link.send(&Msg::Leave(frac));
                         tray(TRAY_AWAY);
                     }
@@ -364,6 +402,9 @@ pub fn client(secret: &str) {
             _ => {}
         }
     }
+    release(&mut held_keys, &mut held_buttons);
+    let _ = pinger.join();
+    clean_up();
 }
 
 fn release(keys: &mut Vec<(u8, u8, bool)>, buttons: &mut u32) {
