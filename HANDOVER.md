@@ -47,6 +47,7 @@ The signing key is the Actions secret `ROAM_SIGNING_KEY`; the public half is in 
 - Datagram = 12-byte nonce (`[role, PROTOCOL, 0,0, u64 LE sequence]`) + ChaCha20-Poly1305 ciphertext of one `Msg`. Key = SHA-256 of the pairing code. The code (about 50 bits, no slow KDF) is the only secret.
 - Sequence starts at wall-clock nanoseconds; the receiver drops any sequence <= the last accepted one (replay and reordering). Role byte stops a side accepting its own packets. Source IP must be private, link-local or loopback.
 - Messages: `Enter(edge, frac)`, `Leave(frac)`, `Move(dx,dy)`, `Button(raw flags, data)`, `Key{vk,scan,up,ext}`, `Clip(text)`, `Ping`, `Bye`. Edge: 0 right, 1 left, 2 top, 3 bottom.
+- A `Bye` received during a live connection makes the receiver heel too (`gui::heel()` posts `WM_HEEL`, which runs the same `stop()` as the Heel button). A timeout without a `Bye` does not: that PC keeps waiting. Quit and the updater also send `Bye`, so the other PC returns to setup then as well.
 - Discovery: the host broadcasts Pings to `255.255.255.255:47321` until the client answers, then talks unicast. Both sides ping every 500 ms. 2 s of silence = connection lost. `Bye` on stop makes the other side react at once.
 - `PROTOCOL` is authenticated because it is in the nonce. A packet with the right code and another version is dropped and the status line says the other PC runs a different Roam version. Builds before 0.2 sent 0, so they no longer connect to 0.2. Bump it only when the wire format changes; updating one PC at a time then keeps working otherwise.
 

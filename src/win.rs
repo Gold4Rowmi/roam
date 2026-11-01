@@ -1,5 +1,5 @@
 //! Windows side: host captures input with low-level hooks + raw input, client injects with SendInput.
-use crate::gui::{arrived, status, tray, visible, TRAY_AWAY, TRAY_HERE, TRAY_OFF};
+use crate::gui::{arrived, heel, status, tray, visible, TRAY_AWAY, TRAY_HERE, TRAY_OFF};
 use crate::net::{bind_lan, Link, Msg, CLIENT, HOST, MAX_CLIP, PORT};
 use crate::trust;
 use std::mem::{size_of, zeroed};
@@ -154,14 +154,16 @@ fn client_up() -> bool {
 fn host_recv(link: &Link, code: &str) {
     let (start, mut linked, mut warned, mut peer) = (Instant::now(), false, false, String::new());
     loop {
+        let mut bye = false;
         match link.recv() {
             Some(Msg::Leave(f)) => take_back(f),
             Some(Msg::Clip(s)) => clip_set(&s),
             Some(Msg::Ping(n)) => { *LAST_PING.lock().unwrap() = Some(Instant::now()); peer = n }
-            Some(Msg::Bye) => *LAST_PING.lock().unwrap() = None,
+            Some(Msg::Bye) => { *LAST_PING.lock().unwrap() = None; bye = true }
             _ => {}
         }
         if link.mismatch() { status(VERSION_MISMATCH) }
+        let was_linked = linked;
         if linked != client_up() {
             linked = !linked;
             if linked {
@@ -178,6 +180,7 @@ fn host_recv(link: &Link, code: &str) {
                 link.set_peer(BROADCAST);
             }
         }
+        if bye && was_linked { heel() } // the other PC pressed Heel (or quit): follow it back to the setup screen
         if !linked && !warned && start.elapsed() > Duration::from_secs(3) {
             warned = true;
             status("No answer yet. On the other PC: same code, press Be controlled, and allow it in Windows Firewall.");
@@ -272,6 +275,7 @@ pub fn client(secret: &str) {
     loop {
         let msg = link.recv();
         if link.mismatch() { status(VERSION_MISMATCH) }
+        let (bye, was_linked) = (matches!(msg, Some(Msg::Bye)), linked);
         match &msg {
             Some(Msg::Bye) => last_seen = Instant::now() - Duration::from_secs(3), // counts as already timed out
             Some(m) => {
@@ -295,6 +299,7 @@ pub fn client(secret: &str) {
                 active = false;
             }
         }
+        if bye && was_linked { heel() } // the other PC pressed Heel (or quit): follow it back to the setup screen
         match msg {
             Some(Msg::Enter(e, f)) => unsafe {
                 (active, edge) = (true, e ^ 1);

@@ -49,6 +49,7 @@ const WM_REFRESH: u32 = WM_APP + 2; // worker threads post this; the UI thread a
 const WM_CLOSE_NOW: u32 = WM_APP + 3; // the updater started the new exe; this one goes
 const WM_ARRIVED: u32 = WM_APP + 4;   // the cursor landed here at (wparam, lparam)
 const WM_PEERS: u32 = WM_APP + 5;     // the finder thread changed PEERS
+const WM_HEEL: u32 = WM_APP + 6;      // the other PC said Bye during a connection
 // The brand's pop sparkle: eight rust squares burst out of the middle in the eight directions,
 // 4 steps of 8 or 16 px each over .42 s (rowmi-ui-guidelines.html, .spark and sparks()).
 const SPARK_PX: i32 = 8;              // each spark is an 8 px square
@@ -172,6 +173,11 @@ pub fn offer(v: &str) {
 
 pub fn close() {
     unsafe { PostMessageW(MAIN.load(Relaxed) as HWND, WM_CLOSE_NOW, 0, 0) };
+}
+
+/// Heel this PC because the other one did. Safe from any thread; a dropped link is not this, only a Bye.
+pub fn heel() {
+    unsafe { PostMessageW(MAIN.load(Relaxed) as HWND, WM_HEEL, 0, 0) };
 }
 
 /// The mouse just landed on this PC at (x, y). Safe from any thread.
@@ -934,6 +940,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_KEYDOWN | WM_LBUTTONDOWN if BOOT.load(Relaxed) >= 6 => { end_boot(hwnd); 0 } // any input after 300 ms skips
         WM_REFRESH => { refresh(hwnd); 0 }
         WM_CLOSE_NOW => { quit(hwnd); 0 }
+        WM_HEEL => {
+            if STARTED.load(Relaxed) { brand::play(brand::BACK); stop() }
+            0
+        }
         WM_ARRIVED => { show_spark(hwnd, wp as isize as i32, lp as i32); 0 }
         WM_TIMER if wp == TIMER_SPARK => {
             let f = SPARK_AT.fetch_add(1, Relaxed) + 1;

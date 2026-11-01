@@ -20,6 +20,8 @@ Roam asks GitHub for the latest release when it opens and once a day. That reque
 
 Both sides remember the code and layout, and each PC remembers the other as **trusted** once they have connected. A PC you paired earlier is found through its saved code. When both have Roam open at the setup screen (neither needs to be waiting), each shows a button for the other: **Roam onto NAME** on the PC whose mouse you want to use. On the other PC that button turns into **Allow NAME**, and nothing connects until it is pressed. The normal setup (type a code, pick a button) is still there for a new PC, and nothing happens by itself. Right-click a found PC to **Forget** it.
 
+Pressing **Heel** on one PC (or choosing Quit, or updating) sends the other PC back to the setup screen too, so you never have to heel both. If a PC just drops (it sleeps, or the network blips), the other one keeps waiting for it instead.
+
 Finding trusted PCs sends a small encrypted beacon to your local network every 2 seconds, only while Roam sits at the setup screen and only once you have a saved code or a trusted PC. It never leaves your network, and anything without the shared code can't read it or answer it. To open Roam when you sign in to Windows, tick "Open Roam when I sign in to Windows" in the installer (off by default), or put a shortcut to `roam.exe` in the folder you get from pressing Win+R and running `shell:startup`. The window tucks into the tray once the two PCs connect: Rommel on mint means the mouse is here, Rommel on paper means it is on the other PC, sleepy Rommel means not connected. Right-click him to Heel (stop) or quit. No IP addresses: the host finds the client by LAN broadcast.
 
 ## Brand
