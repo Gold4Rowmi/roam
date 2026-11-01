@@ -71,6 +71,7 @@ pub struct Link {
     last_seq: AtomicU64,
     peer: Mutex<Option<SocketAddr>>,
     mismatch: AtomicBool,
+    buf: Mutex<Vec<u8>>, // kept between packets: clearing 64 KB for every mouse move adds up
 }
 
 impl Link {
@@ -86,6 +87,7 @@ impl Link {
             last_seq: AtomicU64::new(0),
             peer: Mutex::new(peer),
             mismatch: AtomicBool::new(false),
+            buf: Mutex::new(vec![0; 65535]),
         }
     }
 
@@ -99,7 +101,9 @@ impl Link {
     }
 
     pub fn send(&self, m: &Msg) {
-        let Some(peer) = *self.peer.lock().unwrap() else { return };
+        // held through the send: threads taking turns must not overtake, or the receiver drops the older packet
+        let peer = self.peer.lock().unwrap();
+        let Some(peer) = *peer else { return };
         let mut nonce = [0u8; 12];
         nonce[0] = self.role;
         nonce[1] = PROTOCOL;
@@ -111,7 +115,7 @@ impl Link {
     /// Returns None on timeout (500ms) or on any packet that is not from the LAN,
     /// not from the other role, replayed/out of order, or fails authentication.
     pub fn recv(&self) -> Option<Msg> {
-        let mut buf = [0u8; 65535];
+        let mut buf = self.buf.lock().unwrap();
         let (n, from) = self.sock.recv_from(&mut buf).ok()?;
         let SocketAddr::V4(a) = from else { return None };
         let ip = a.ip();

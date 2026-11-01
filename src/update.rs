@@ -94,8 +94,8 @@ pub fn start() {
                 told = found;
                 let v = format!("{a}.{b}.{c}");
                 *AVAILABLE.lock().unwrap() = Some(v.clone());
-                gui::offer(&v);
-                gui::status(&format!("Roam {v} is ready. Press Update to install it."));
+                gui::offer();
+                gui::status("A new Roam is ready. Press Update to install it.");
             }
             std::thread::sleep(Duration::from_secs(24 * 60 * 60));
         }
@@ -118,14 +118,14 @@ fn download_and_swap(v: &str) -> Result<PathBuf, &'static str> {
 pub fn install() {
     let Some(v) = AVAILABLE.lock().unwrap().clone() else { return };
     std::thread::spawn(move || {
-        gui::status(&format!("Downloading Roam {v}..."));
+        gui::status("Downloading the new Roam...");
         match download_and_swap(&v).map(|exe| std::process::Command::new(exe).spawn()) {
             Ok(Ok(_)) => gui::close(),
             Ok(Err(_)) => gui::status("Roam is updated. Quit and open it again to finish."),
             Err(why) => {
                 brand::play(brand::ERROR);
                 gui::status(why);
-                gui::offer(&v);
+                gui::offer();
             }
         }
     });

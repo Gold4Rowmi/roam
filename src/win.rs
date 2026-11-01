@@ -6,11 +6,13 @@ use std::mem::{size_of, zeroed};
 use std::net::{SocketAddr, UdpSocket};
 use std::ptr::{copy_nonoverlapping, null, null_mut};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::Relaxed};
+use std::sync::mpsc::{channel, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::System::DataExchange::*;
 use windows_sys::Win32::System::Memory::*;
+use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::Input::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
@@ -18,6 +20,18 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 const CF_UNICODETEXT: u32 = 13;
 const VERSION_MISMATCH: &str = "The other PC runs a different Roam version. Update both PCs, then try again.";
 pub const BROADCAST: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::BROADCAST), PORT);
+
+type Job = Box<dyn FnOnce() + Send>;
+static SIDE: OnceLock<Sender<Job>> = OnceLock::new();
+
+/// Clipboard and sound run here, in order, never on an input path: moves would queue behind them,
+/// and Windows removes a low-level hook that stalls too often.
+fn later(job: impl FnOnce() + Send + 'static) {
+    if let Some(side) = SIDE.get() { let _ = side.send(Box::new(job)); }
+}
+
+/// These threads mostly sleep, so this costs nothing until input arrives, then a busy PC can't hold it up.
+fn urgent() { unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST); } }
 
 /// This PC's name as the other PC will show it.
 pub fn name() -> String { std::env::var("COMPUTERNAME").unwrap_or_else(|_| "this PC".into()) }
@@ -87,6 +101,11 @@ static LAST_PING: Mutex<Option<Instant>> = Mutex::new(None);
 
 fn init(secret: &str, sock: UdpSocket, role: u8, peer: Option<SocketAddr>) -> &'static Link {
     // host: the chosen monitor; client: its whole desktop
+    SIDE.get_or_init(|| {
+        let (tx, rx) = channel::<Job>();
+        std::thread::spawn(move || for job in rx { job() });
+        tx
+    });
     let target = TARGET.lock().unwrap().1;
     SCREEN.get_or_init(|| if role == HOST && target.2 > 0 { target } else { unsafe {
         (GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN),
@@ -107,6 +126,7 @@ pub fn host(secret: &str) {
         link.send(&Msg::Ping(name()));
         std::thread::sleep(Duration::from_millis(500));
     });
+    urgent(); // this thread runs the hooks every mouse move on this PC passes through
     unsafe {
         SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), null_mut(), 0);
         SetWindowsHookExW(WH_KEYBOARD_LL, Some(key_hook), null_mut(), 0);
@@ -152,12 +172,13 @@ fn client_up() -> bool {
 }
 
 fn host_recv(link: &Link, code: &str) {
+    urgent();
     let (start, mut linked, mut warned, mut peer) = (Instant::now(), false, false, String::new());
     loop {
         let mut bye = false;
         match link.recv() {
             Some(Msg::Leave(f)) => take_back(f),
-            Some(Msg::Clip(s)) => clip_set(&s),
+            Some(Msg::Clip(s)) => later(move || clip_set(&s)),
             Some(Msg::Ping(n)) => { *LAST_PING.lock().unwrap() = Some(Instant::now()); peer = n }
             Some(Msg::Bye) => { *LAST_PING.lock().unwrap() = None; bye = true }
             _ => {}
@@ -199,13 +220,15 @@ pub fn shutdown() {
 fn hand_over(frac: f32) {
     if !client_up() { return } // cursor just stops at the edge; the status line already says why
     let link = LINK.get().unwrap();
-    if let Some(c) = clip_get() { link.send(&Msg::Clip(c)) }
     link.send(&Msg::Enter(EDGE.load(Relaxed), frac));
     REMOTE.store(true, Relaxed);
     MODS.store(0, Relaxed);
-    crate::brand::play(crate::brand::ON);   // the cursor crossed over
-    status("Roaming on the other PC. Move back through the same edge, or press Ctrl+Alt+Esc (Heel), to return.");
-    tray(TRAY_AWAY);
+    later(move || {
+        if let Some(c) = clip_get() { link.send(&Msg::Clip(c)) }
+        crate::brand::play(crate::brand::ON);   // the cursor crossed over
+        status("Roaming on the other PC. Move back through the same edge, or press Ctrl+Alt+Esc (Heel), to return.");
+        tray(TRAY_AWAY);
+    });
 }
 
 fn take_back(frac: f32) {
@@ -213,7 +236,7 @@ fn take_back(frac: f32) {
     let (x, y) = near_edge(EDGE.load(Relaxed), frac);
     unsafe { SetCursorPos(x, y) };
     arrived(x, y);
-    crate::brand::play(crate::brand::OFF);  // and came home
+    later(|| crate::brand::play(crate::brand::OFF));  // and came home
     status("Back on this PC.");
     tray(TRAY_HERE);
 }
@@ -261,6 +284,7 @@ pub fn client(secret: &str) {
     // an updated or restarted copy, or the finder, can still hold the port for a moment
     let sock = bind_lan().expect("port 47321 is in use. Is another copy of Roam running?");
     let link = init(secret, sock, CLIENT, None);
+    urgent();
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(500));
         link.send(&Msg::Ping(name()));
@@ -306,11 +330,11 @@ pub fn client(secret: &str) {
                 let (x, y) = near_edge(edge, f);
                 SetCursorPos(x, y);
                 arrived(x, y);
-                crate::brand::play(crate::brand::TAG);  // tag jingle: it arrived here
+                later(|| crate::brand::play(crate::brand::TAG));  // tag jingle: it arrived here
                 tray(TRAY_HERE);
             },
             Some(Msg::Leave(_)) => { active = false; release(&mut held_keys, &mut held_buttons); tray(TRAY_AWAY) }
-            Some(Msg::Clip(s)) => clip_set(&s),
+            Some(Msg::Clip(s)) => later(move || clip_set(&s)),
             Some(Msg::Move(dx, dy)) => unsafe {
                 mouse(dx as i32, dy as i32, MOUSEEVENTF_MOVE, 0);
                 let mut p: POINT = zeroed();
@@ -319,7 +343,7 @@ pub fn client(secret: &str) {
                     if let Some(frac) = at_edge(edge, p) {
                         active = false;
                         release(&mut held_keys, &mut held_buttons);
-                        if let Some(c) = clip_get() { link.send(&Msg::Clip(c)) }
+                        later(move || if let Some(c) = clip_get() { link.send(&Msg::Clip(c)) });
                         link.send(&Msg::Leave(frac));
                         tray(TRAY_AWAY);
                     }

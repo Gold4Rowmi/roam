@@ -1,13 +1,13 @@
 ---
-name: rowmi-design
-description: Design and build anything in the ROWMI brand (edgehop/Roam, SaveForge/dig, minibot, VITACART, and the brand itself) - app UI, websites, splash and boot screens, icons, posts, sounds. Carries the exact pixel grids for Rommel and the wordmark. Use whenever ROWMI, Rommel, or one of those apps comes up.
+name: "rowmi-design"
+description: "Design and build anything in the ROWMI brand (edgehop/Roam, SaveForge/dig, minibot, VITACART, the brand itself): app UI, websites, boot and splash screens, icons, posts, sounds. Carries the exact pixel grids for Rommel and the wordmark. Use whenever ROWMI, Rommel or one of those apps comes up."
 ---
 
 # ROWMI design
 
 ROWMI is the brand for a family of small, dependable apps: **edgehop** (mouse and keyboard sharing; also called ROWMI Roam), **SaveForge** (save editor; also called dig), **minibot** (minigame autoplayer), **VITACART** (PS Vita launcher). It is 8-bit, DS-Lite-hub nostalgic, with modern cues from teenage engineering hardware. The logo is **Rommel**, a pixel doberman, the family dog of ten years. The brand is dedicated to him.
 
-Tagline: **Playful tools with a lot of bark.** Dedication line, used quietly once per app (About screen, footer): **Made in memory of Rommel.**
+Tagline: **Playful tools with a lot of bark.** Dedication line: **Made in memory of Rommel.** Both live on the app's About screen (reached from Settings) and the website footer, once, and nowhere else. Never on a working screen, in a footer of the main view, in help text, tooltips or a status line, and never next to a version number. The version number is also About-only (plus beside the website's download button). The screen is for the user's job; the title-bar dog is all the brand it needs.
 
 When a ROWMI package is available (`tokens/`, `logo/`, `rommel/`, `icons/`, `patterns/`, `sounds/`, `docs/`), use its files rather than redrawing anything. The brand book (`docs/rowmi-brand-book.html`) and UI guidelines (`docs/rowmi-ui-guidelines.html`) are the full reference; this skill is the working summary.
 
@@ -131,8 +131,8 @@ A 64×40 dot matrix, one dot per logo pixel. Four claw taps; the ROWMI word step
 
 ## Voice
 
-Short, warm, plain. Say what happens, not what it's called. No "supercharge", no exclamation marks in UI copy, no guilt. Errors say what to try next. Rommel never speaks.
+Short, warm, plain. Say what happens, not what it's called. No "supercharge", no exclamation marks in UI copy, no guilt. Errors say what to try next. Help text is one sentence, only where someone could be stuck, and never carries sentiment, the brand or a version. Rommel never speaks.
 
 ## Before shipping, check
 
-Rommel and the wordmark drawn from the grids in this skill, never from memory or a font · Whole pixel units, no mixels · Silkscreen only at 8/16/24/32/64 · Plex Mono 400/600 only · one shell, text on it black · blue only for selection · Rommel Idle unless reacting; black on dark with the outline · frame depth only · pixel art stepped, never scaled or faded · boot once per launch, skippable, ends on the logo · every press has a sound · contrast 4.5 : 1 · 44 px targets · all four states designed · no dark patterns.
+Rommel and the wordmark drawn from the grids in this skill, never from memory or a font · Whole pixel units, no mixels · Silkscreen only at 8/16/24/32/64 · Plex Mono 400/600 only · one shell, text on it black · blue only for selection · Rommel Idle unless reacting; black on dark with the outline · frame depth only · pixel art stepped, never scaled or faded · boot once per launch, skippable, ends on the logo · every press has a sound · no tagline, dedication or version on any working screen · contrast 4.5 : 1 · 44 px targets · all four states designed · no dark patterns.

@@ -24,12 +24,15 @@ const ID_HOST: isize = 2;
 const ID_CLIENT: isize = 3;
 const ID_STATUS: isize = 4;
 const ID_STOP: isize = 5;
-const ID_DEDICATION: isize = 6;
 const ID_UPDATE: isize = 7;
 const ID_PEER: isize = 8; // 8, 9 and 10: one button per trusted PC found
 const MAX_PEERS: usize = 3; // shortcut: the 3 first alphabetically show, raise it when the window can take more rows
 const STYLE: u32 = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-const HEIGHT: i32 = 544;
+const HEIGHT: i32 = 530;
+const ID_BACK: isize = 20; // the About screen's button
+const SC_ABOUT: usize = 0x10; // our item in the window menu; system commands use the top bits
+const TAGLINE: &str = "Playful tools with a lot of bark.";
+const DEDICATION: &str = "Made in memory of Rommel.";
 const ROW: i32 = 52; // the window grows by this for each extra button row: 44 tall plus an 8 gap
 const SETUP_HELP: &str = "Drag the mint box next to the monitor edge the other PC sits beside, then pick what this PC does.";
 const EM_SETREADONLY: u32 = 0xCF;
@@ -73,6 +76,7 @@ const BOOT_TICK: u32 = 55; // ms; the brand timeline is in multiples of 110
 const MENU_SHOW: usize = 10;
 const MENU_STOP: usize = 11;
 const MENU_QUIT: usize = 12;
+const MENU_ABOUT: usize = 13;
 /// Tray states: 0 not connected, 1 mouse is on this PC, 2 mouse is on the other PC
 pub const TRAY_OFF: u8 = 0;
 pub const TRAY_HERE: u8 = 1;
@@ -85,6 +89,7 @@ static PIXEL16: AtomicUsize = AtomicUsize::new(0); // Silkscreen 16, or null -> 
 static PIXEL24: AtomicUsize = AtomicUsize::new(0);
 static PIXEL32: AtomicUsize = AtomicUsize::new(0);
 static PLEX: [AtomicUsize; 3] = [AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0)]; // body, caption, code
+static ABOUT: AtomicUsize = AtomicUsize::new(0); // the About screen while it is open, else 0
 static SPARK_WIN: AtomicUsize = AtomicUsize::new(0);
 static SPARK_AT: AtomicU8 = AtomicU8::new(0); // spark frame showing, 0..4
 static SPARK_FAR: AtomicU8 = AtomicU8::new(0); // bit i: spark i takes 16 px steps, else 8, drawn fresh each burst
@@ -97,7 +102,7 @@ static FACE: AtomicU8 = AtomicU8::new(0);
 static TRAY_STATE: AtomicU8 = AtomicU8::new(TRAY_OFF);
 static OFFLINE: AtomicBool = AtomicBool::new(false); // true only after a connection was lost
 static ICONS: [AtomicUsize; 3] = [AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0)];
-static PENDING: Mutex<(Option<String>, Option<u8>, Option<bool>, Option<String>)> = Mutex::new((None, None, None, None));
+static PENDING: Mutex<(Option<String>, Option<u8>, Option<bool>, bool)> = Mutex::new((None, None, None, false));
 static MONITORS: Mutex<Vec<RECT>> = Mutex::new(Vec::new()); // physical pixels, primary first
 static DRAG: Mutex<Option<((i32, i32), (i32, i32))>> = Mutex::new(None); // box top-left + grab offset
 static PEERS: Mutex<Vec<net::Found>> = Mutex::new(Vec::new());  // trusted PCs heard right now, from the finder thread
@@ -165,9 +170,9 @@ pub fn visible(on: bool) {
     unsafe { PostMessageW(MAIN.load(Relaxed) as HWND, WM_REFRESH, 0, 0) };
 }
 
-/// Show the Update button for version `v`, or give it back after a failed attempt.
-pub fn offer(v: &str) {
-    PENDING.lock().unwrap().3 = Some(v.to_string());
+/// Show the Update button, or give it back after a failed attempt.
+pub fn offer() {
+    PENDING.lock().unwrap().3 = true;
     unsafe { PostMessageW(MAIN.load(Relaxed) as HWND, WM_REFRESH, 0, 0) };
 }
 
@@ -205,7 +210,6 @@ unsafe fn layout(hwnd: HWND) {
     place(ID_STOP, 364, 44);
     place(ID_UPDATE, 468 + peers * ROW, 44);
     place(ID_STATUS, 466 + grew, 56);
-    place(ID_DEDICATION, 524 + grew, 16);
     // an EDIT paints ~2 px past its own edge: keep it well inside the frame
     place_code(hwnd);
 }
@@ -221,7 +225,7 @@ unsafe fn load_type(hwnd: HWND) {
         if f.is_null() { brand::font("Consolas", px(size), weight, false) } else { f }
     };
     let old = [(plex(14, 400), &PLEX[0]), (plex(12, 400), &PLEX[1]), (plex(20, 600), &PLEX[2])].map(|(f, slot)| slot.swap(f as usize, Relaxed));
-    for (font, ids) in [(0, &[ID_HOST, ID_CLIENT, ID_STOP, ID_STATUS][..]), (1, &[ID_DEDICATION]), (2, &[ID_CODE])] {
+    for (font, ids) in [(0, &[ID_HOST, ID_CLIENT, ID_STOP, ID_STATUS][..]), (2, &[ID_CODE])] {
         for id in ids { SendMessageW(GetDlgItem(hwnd, *id as i32), WM_SETFONT, PLEX[font].load(Relaxed), 1); }
     }
     for f in old { DeleteObject(f as _); } // only now, when no control still holds them
@@ -313,8 +317,68 @@ unsafe extern "system" fn code_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -
     CallWindowProcW(std::mem::transmute::<usize, WNDPROC>(EDIT_PROC.load(Relaxed)), h, msg, wp, lp)
 }
 
+/// Plex Mono text; `font` indexes PLEX.
+unsafe fn plex_text(hdc: HDC, r: &RECT, font: usize, s: &str, c: u32) {
+    let old = SelectObject(hdc, PLEX[font].load(Relaxed) as _);
+    SetBkMode(hdc, 1);
+    SetTextColor(hdc, c);
+    let mut rr = *r;
+    DrawTextW(hdc, wide(s).as_ptr(), -1, &mut rr, DT_SINGLELINE | DT_NOPREFIX | DT_LEFT | DT_TOP);
+    SelectObject(hdc, old);
+}
+
+/// The only place the version, tagline and dedication appear, per the brand. Version at the top and
+/// the other two at the foot, because the dedication never sits next to a version number.
+unsafe extern "system" fn about_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    match msg {
+        WM_PAINT => {
+            let mut ps: PAINTSTRUCT = zeroed();
+            let hdc = BeginPaint(hwnd, &mut ps);
+            let mut c: RECT = zeroed();
+            GetClientRect(hwnd, &mut c);
+            brand::fill(hdc, &c, PAPER);
+            title_band(hdc, Face::Idle);
+            plex_text(hdc, &prect(16, 84, 328, 20), 0, &format!("Version {}", update::VERSION), BLACK);
+            plex_text(hdc, &brand::rect(px(16), c.bottom - px(112), px(328), px(20)), 0, TAGLINE, BLACK);
+            plex_text(hdc, &brand::rect(px(16), c.bottom - px(88), px(328), px(16)), 1, DEDICATION, MUTED);
+            EndPaint(hwnd, &ps);
+            0
+        }
+        WM_DRAWITEM => { draw_button(&*(lp as *const DrawItem)); 1 }
+        WM_COMMAND | WM_CLOSE => { close_about(); 0 } // Back, Esc or Alt+F4
+        _ => DefWindowProcW(hwnd, msg, wp, lp),
+    }
+}
+
+/// Covers the main window, which stays disabled meanwhile, so it can't be dragged to another scale.
+unsafe fn open_about(hwnd: HWND) {
+    if ABOUT.load(Relaxed) != 0 { return }
+    brand::play(brand::CLICK);
+    let mut c: RECT = zeroed();
+    GetClientRect(hwnd, &mut c);
+    let mut p = POINT { x: 0, y: 0 };
+    ClientToScreen(hwnd, &mut p);
+    let a = CreateWindowExW(0, wide("ROWMI.roam.about").as_ptr(), wide(TITLE).as_ptr(), WS_POPUP | WS_VISIBLE,
+        p.x, p.y, c.right, c.bottom, hwnd, null_mut(), null_mut(), null());
+    let back = CreateWindowExW(0, wide("BUTTON").as_ptr(), wide("Back").as_ptr(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+        px(16), c.bottom - px(60), px(328), px(44), a, ID_BACK as HMENU, null_mut(), null());
+    ABOUT.store(a as usize, Relaxed);
+    EnableWindow(hwnd, 0);
+    SetFocus(back);
+}
+
+unsafe fn close_about() {
+    let a = ABOUT.swap(0, Relaxed) as HWND;
+    if a.is_null() { return }
+    brand::play(brand::BACK);
+    let hwnd = MAIN.load(Relaxed) as HWND;
+    EnableWindow(hwnd, 1); // before the destroy, or Windows activates some other app
+    DestroyWindow(a);
+    SetForegroundWindow(hwnd);
+}
+
 /// First offer of this run: make room for the button, then Rommel, the jingle and a tray balloon.
-unsafe fn announce(hwnd: HWND, v: &str) {
+unsafe fn announce(hwnd: HWND) {
     ShowWindow(GetDlgItem(hwnd, ID_UPDATE as i32), SW_SHOW);
     layout(hwnd);
     InvalidateRect(hwnd, null(), 0);
@@ -323,7 +387,7 @@ unsafe fn announce(hwnd: HWND, v: &str) {
     if STARTED.load(Relaxed) {
         let mut d = nid(NIF_INFO);
         d.dwInfoFlags = NIIF_NOSOUND; // the tag jingle has already played
-        let (title, info) = (wide(TITLE), wide(&format!("Roam {v} is ready. Click Rommel in the tray, then press Update.")));
+        let (title, info) = (wide(TITLE), wide("A new Roam is ready. Click Rommel in the tray, then press Update."));
         d.szInfoTitle[..title.len()].copy_from_slice(&title);
         d.szInfo[..info.len()].copy_from_slice(&info);
         Shell_NotifyIconW(NIM_MODIFY, &d);
@@ -409,11 +473,10 @@ unsafe fn forget_menu(hwnd: HWND, i: usize, from_keyboard: bool) {
 
 unsafe fn refresh(hwnd: HWND) {
     let (text, state, vis, offered) = std::mem::take(&mut *PENDING.lock().unwrap());
-    if let Some(v) = offered {
+    if offered {
         let b = GetDlgItem(hwnd, ID_UPDATE as i32);
-        SetWindowTextW(b, wide(&format!("Update to {v}")).as_ptr());
         EnableWindow(b, 1);
-        if !flagged_visible(hwnd, ID_UPDATE) { announce(hwnd, &v) }
+        if !flagged_visible(hwnd, ID_UPDATE) { announce(hwnd) }
         InvalidateRect(b, null(), 0);
     }
     match vis {
@@ -623,6 +686,14 @@ unsafe fn paint_bubbles(hdc: HDC, u: i32) {
 
 // ---------- painting ----------
 
+/// Lockup on the left, then the app name as a small Silkscreen 16 label on the wordmark's baseline.
+unsafe fn title_band(hdc: HDC, f: Face) {
+    brand::fill(hdc, &prect(0, 0, 360, 64), MINT);
+    brand::lockup(hdc, px(16), px(12), px(4), f, &LIGHT, BLACK);
+    pixel_text(hdc, &prect(184, 38, 160, 16), 16, APP, BLACK, false);
+    brand::fill(hdc, &prect(0, 64, 360, 1), BLACK);
+}
+
 unsafe fn paint(hwnd: HWND) {
     let mut ps: PAINTSTRUCT = zeroed();
     let hdc = BeginPaint(hwnd, &mut ps);
@@ -631,14 +702,8 @@ unsafe fn paint(hwnd: HWND) {
         paint_boot(hdc, tick as i32);
     } else {
         brand::fill(hdc, &prect(0, 0, 360, HEIGHT + (MAX_PEERS as i32 + 1) * ROW), PAPER);
-        // title band: lockup on the left, app name on the chin line at the right, one unit for all
-        let u = px(4);
-        brand::fill(hdc, &prect(0, 0, 360, 64), MINT);
-        brand::lockup(hdc, px(16), px(12), u, face(), &LIGHT, BLACK);
-        // the brand's title: the app name is a small Silkscreen 16 label on the wordmark's baseline
-        pixel_text(hdc, &prect(184, 38, 160, 16), 16, APP, BLACK, false);
-        if EGG.load(Relaxed) > 0 { paint_bubbles(hdc, u) }
-        brand::fill(hdc, &prect(0, 64, 360, 1), BLACK);
+        title_band(hdc, face());
+        if EGG.load(Relaxed) > 0 { paint_bubbles(hdc, px(4)) }
         // launch bar: a mint block stepping along the band's foot while we look for the other PC
         if STARTED.load(Relaxed) && TRAY_STATE.load(Relaxed) == TRAY_OFF {
             brand::fill(hdc, &prect(0, 60, 360, 4), BLACK);
@@ -673,7 +738,7 @@ unsafe fn paint_boot(hdc: HDC, tick: i32) {
 unsafe fn end_boot(hwnd: HWND) {
     if BOOT.swap(0, Relaxed) == 0 { return }
     KillTimer(hwnd, TIMER_BOOT);
-    for id in [ID_CODE, ID_HOST, ID_CLIENT, ID_STATUS, ID_DEDICATION] { ShowWindow(GetDlgItem(hwnd, id as i32), SW_SHOW); }
+    for id in [ID_CODE, ID_HOST, ID_CLIENT, ID_STATUS] { ShowWindow(GetDlgItem(hwnd, id as i32), SW_SHOW); }
     SetFocus(GetDlgItem(hwnd, ID_CODE as i32));
     InvalidateRect(hwnd, null(), 1);
     show_peers(hwnd); // anything found while the boot screen was up
@@ -783,10 +848,14 @@ pub fn run() {
         ctl("BUTTON", "Update", WS_TABSTOP | BS_OWNERDRAW, ID_UPDATE);
         for i in 0..MAX_PEERS as isize { ctl("BUTTON", "", WS_TABSTOP | BS_OWNERDRAW, ID_PEER + i); }
         ctl("STATIC", SETUP_HELP, 0, ID_STATUS);
-        ctl("STATIC", &format!("Made in memory of Rommel. v{}", update::VERSION), 0, ID_DEDICATION);
         load_type(hwnd);
         layout(hwnd);
         make_spark();
+        let about_cls = wide("ROWMI.roam.about");
+        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(about_proc), hCursor: wc.hCursor, lpszClassName: about_cls.as_ptr(), ..zeroed() });
+        let sys = GetSystemMenu(hwnd, 0);
+        AppendMenuW(sys, MF_SEPARATOR, 0, null());
+        AppendMenuW(sys, 0, SC_ABOUT, wide("About Roam").as_ptr());
         EDIT_PROC.store(SetWindowLongPtrW(code, GWLP_WNDPROC, code_proc as usize as isize) as usize, Relaxed);
         migrate_code(&std::env::current_exe().unwrap().with_file_name("roam.code"), &code_file());
         if let Ok(saved) = std::fs::read_to_string(code_file()) {
@@ -807,7 +876,8 @@ pub fn run() {
 
         let mut msg: MSG = zeroed();
         while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
-            if IsDialogMessageW(hwnd, &msg) == 0 {
+            let dialog = match ABOUT.load(Relaxed) { 0 => hwnd, a => a as HWND }; // Tab and Esc go to what's on top
+            if IsDialogMessageW(dialog, &msg) == 0 {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
@@ -911,7 +981,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT => {
             SetBkColor(wp as HDC, PAPER);
             let id = GetDlgCtrlID(lp as HWND) as isize;
-            SetTextColor(wp as HDC, if id == ID_DEDICATION { MUTED } else if id == ID_STATUS && ERR.load(Relaxed) { DANGER } else { BLACK });
+            SetTextColor(wp as HDC, if id == ID_STATUS && ERR.load(Relaxed) { DANGER } else { BLACK });
             PAPER_BRUSH.load(Relaxed) as LRESULT
         }
         WM_TIMER if wp == TIMER_BOOT => {
@@ -940,6 +1010,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_KEYDOWN | WM_LBUTTONDOWN if BOOT.load(Relaxed) >= 6 => { end_boot(hwnd); 0 } // any input after 300 ms skips
         WM_REFRESH => { refresh(hwnd); 0 }
         WM_CLOSE_NOW => { quit(hwnd); 0 }
+        WM_SYSCOMMAND if wp & 0xFFF0 == SC_ABOUT => { open_about(hwnd); 0 }
         WM_HEEL => {
             if STARTED.load(Relaxed) { brand::play(brand::BACK); stop() }
             0
@@ -984,6 +1055,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let m = CreatePopupMenu();
             AppendMenuW(m, 0, MENU_SHOW, wide("Show window").as_ptr());
             AppendMenuW(m, 0, MENU_STOP, wide("Heel (stop)").as_ptr());
+            AppendMenuW(m, 0, MENU_ABOUT, wide("About Roam").as_ptr());
             AppendMenuW(m, 0, MENU_QUIT, wide("Quit").as_ptr());
             let mut p: POINT = zeroed();
             GetCursorPos(&mut p);
@@ -993,6 +1065,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             match pick as usize {
                 MENU_SHOW => { brand::play(brand::CLICK); show(hwnd) }
                 MENU_STOP => { brand::play(brand::BACK); stop() }
+                MENU_ABOUT => { show(hwnd); open_about(hwnd) }
                 MENU_QUIT => { brand::play(brand::OFF); quit(hwnd) }
                 _ => {}
             }

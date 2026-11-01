@@ -57,6 +57,13 @@ The signing key is the Actions secret `ROAM_SIGNING_KEY`; the public half is in 
 - **Ctrl+Alt+Esc** on the host is the panic key. The client releases held keys and buttons on `Leave`, `Bye` or timeout.
 - Sounds: `on` when the cursor leaves, `off` when it comes home, `tag` when it arrives on the client.
 
+## Latency rules (`win.rs`, `net.rs`)
+- Input threads (the host's hook and raw-input thread, both receive loops) run at `THREAD_PRIORITY_HIGHEST` through `urgent()`. Windows slows every mouse move on the host until the hook returns, and removes a hook that stalls too often.
+- Nothing slow runs on those threads. Clipboard and sound go through `later()`, a single worker that keeps them in order. So `Clip` can now arrive after `Enter` or `Leave`.
+- `Link::send` holds the peer lock through the send. Two threads send now, and the receiver drops anything older than the newest sequence, so a packet overtaken on the way out would be lost.
+- `Link::recv` reuses one buffer instead of clearing 64 KB per packet.
+- Not fixed: a lost packet is not resent, so a key-up lost on Wi-Fi can leave a key held until the mouse crosses back. The controlled PC also applies its own pointer scaling to relative moves.
+
 ## GUI notes (`gui.rs`)
 - Hand-drawn Win32: STATIC and EDIT controls plus owner-drawn buttons. Worker threads never touch the UI; they write to `PENDING` and post `WM_REFRESH`.
 - Boot runs once per launch (55 ms ticks, about 1.1 s), skippable after 300 ms, honours the Windows reduced-motion setting, ends on Idle Rommel.
@@ -66,6 +73,7 @@ The signing key is the Actions secret `ROAM_SIGNING_KEY`; the public half is in 
 - `layout()` and `load_type()` hold all sizes and fonts, and rerun on `WM_DPICHANGED`. The EDIT box must stay taller than its font's line or it paints over its frame.
 - When the mouse lands on a PC, and when it comes back to the controlling PC, the brand's pop sparkle plays there: eight rust (#D9893B) 8 px squares burst out in the eight directions, 4 steps of 8 or 16 px chosen per spark, 105 ms a step. It follows `rowmi-ui-guidelines.html` (`.spark`, `sparks()`). It is a click-through colour-keyed window that never takes focus. The cursor lands 2 px inside a screen edge, so the burst's middle is pulled inward to keep the whole thing on screen. Only the PC the mouse arrived on shows it.
 - Wrong input bonks, as in the book's `.bonk` and `.field.err`: the label, frame and code box shake -8, +8, -5, +3, 0 px over 5 steps of 60 ms with the error sound, then stay in an error state (red border, red help text) until the box is edited. Triggers: a key a code can't hold or an 11th character (the box is subclassed in `code_proc`), and pressing a button with a code that isn't 10 characters. Pasting bypasses the key filter; `start()` still catches a bad code. The full brand package (book, UI guidelines, icon sources) is in `rowmi-brand-package-v1` beside this folder; check it before drawing any motion.
+- Nothing about ROWMI on the working screen: the version, tagline and dedication appear only on the About screen (`about_proc`), with the dedication away from the version, and no status line, button or balloon names a version. Roam has no Settings screen, so About is reached from the window menu (title-bar icon, or right-click the title bar) and the tray menu. It covers the main window, which stays disabled until Back or Esc.
 - Title band: the wordmark, then "Roam" as a Silkscreen 16 label on its baseline, as the brand's title-bar spec says. A 32 px app name next to the wordmark read as two competing typefaces.
 - Tap Rommel five times: grin and bubbles. One tap: alert and woof.
 
