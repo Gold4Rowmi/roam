@@ -1,0 +1,79 @@
+name: mac
+on:
+  push:
+    branches: [mac]
+  workflow_call:
+
+permissions:
+  contents: write
+
+jobs:
+  mac:
+    runs-on: macos-latest # Apple silicon
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test
+        run: cargo test --locked 2>&1 | tee -a build.log
+
+      - name: Build
+        run: |
+          cargo build --release --locked 2>&1 | tee -a build.log
+          codesign --force --sign - target/release/roam # ad hoc: Apple silicon won't run an unsigned binary
+
+      # after the ad hoc signature, because this covers the exact bytes that ship
+      - name: Sign
+        if: github.ref_type == 'tag'
+        env:
+          ROAM_SIGNING_KEY: ${{ secrets.ROAM_SIGNING_KEY }}
+        run: |
+          cargo build --release --locked --example sign 2>&1 | tee -a build.log
+          cp target/release/roam target/release/roam-mac
+          target/release/examples/sign target/release/roam-mac "${GITHUB_REF_NAME#v}"
+
+      - name: Bundle
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          sh mac/bundle.sh "$version"
+          cd target/release
+          ditto -c -k --keepParent Roam.app Roam-mac.zip
+
+      - name: Launch and screenshot
+        run: |
+          target/release/Roam.app/Contents/MacOS/roam &
+          pid=$!
+          sleep 8
+          screencapture -x mac-window.png || true
+          kill -0 "$pid" # still running: it didn't crash on launch
+          kill "$pid"
+
+      - uses: actions/upload-artifact@v4
+        if: github.ref_type == 'tag'
+        with:
+          name: mac
+          if-no-files-found: error
+          path: |
+            target/release/roam-mac
+            target/release/roam-mac.sig
+            target/release/Roam-mac.zip
+
+      # a prerelease, so the updater's releases/latest never sees it
+      - name: Publish the test build
+        if: github.ref_type == 'branch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete mac-test --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          gh release create mac-test target/release/Roam-mac.zip mac-window.png --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --prerelease --title "Mac test build" --notes "Not a release. Built from $GITHUB_SHA."
+
+      - name: Publish the build log on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          touch build.log
+          [ -f mac-window.png ] || touch mac-window.png
+          gh release delete ci-failure --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          gh release create ci-failure build.log mac-window.png --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "Last failed build" --notes "Mac build failed on $GITHUB_REF_NAME. See build.log."

@@ -5,8 +5,14 @@ use std::path::PathBuf;
 
 const MAX: usize = 8; // shortcut: only the 8 most recent PCs are kept, raise it if someone needs more
 
+#[cfg(windows)]
 pub fn dir() -> PathBuf {
     PathBuf::from(std::env::var_os("APPDATA").unwrap_or_default()).join(r"ROWMI\Roam")
+}
+
+#[cfg(not(windows))]
+pub fn dir() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join("Library/Application Support/ROWMI/Roam")
 }
 
 fn parse(s: &str) -> Vec<(String, String)> {

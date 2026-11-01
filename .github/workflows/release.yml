@@ -11,7 +11,12 @@ defaults:
     shell: bash # pipefail, so a failure piped into tee still fails the step
 
 jobs:
+  mac:
+    uses: ./.github/workflows/mac.yml
+    secrets: inherit
+
   release:
+    needs: mac
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,13 +42,18 @@ jobs:
           choco install innosetup -y --no-progress 2>&1 | tee -a build.log
           "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "//DAppVersion=${GITHUB_REF_NAME#v}" installer.iss 2>&1 | tee -a build.log
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: mac
+          path: target/release
+
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd target/release
-          sha256sum roam.exe roam.exe.sig roam-setup.exe > SHA256SUMS.txt
-          gh release create "$GITHUB_REF_NAME" roam.exe roam.exe.sig roam-setup.exe SHA256SUMS.txt \
+          sha256sum roam.exe roam.exe.sig roam-setup.exe roam-mac roam-mac.sig Roam-mac.zip > SHA256SUMS.txt
+          gh release create "$GITHUB_REF_NAME" roam.exe roam.exe.sig roam-setup.exe roam-mac roam-mac.sig Roam-mac.zip SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" --title "Roam ${GITHUB_REF_NAME#v}" --generate-notes 2>&1 | tee -a ../../build.log
 
       # a prerelease, so the updater's releases/latest never sees it

@@ -1,11 +1,13 @@
 # ROWMI Roam
 
-One mouse and keyboard for two Windows PCs on the same network. Push the cursor off a monitor edge and it roams onto the other PC; push back through the same edge, or press Ctrl+Alt+Esc (Heel), and it comes home. Clipboard text follows you.
+One mouse and keyboard for two computers on the same network, Windows or Mac in any mix. Push the cursor off a monitor edge and it roams onto the other PC; push back through the same edge, or press Ctrl+Alt+Esc (Heel), and it comes home. Clipboard text follows you.
 
 Part of ROWMI. Made in memory of Rommel.
 
 ## Install
-Download `roam-setup.exe` from the latest GitHub release and run it on both PCs. It installs for your user only and needs no admin rights. It isn't code-signed, so Windows may show SmartScreen once: choose **More info**, then **Run anyway**.
+**Mac (Apple silicon):** download `Roam-mac.zip` from the latest GitHub release, unzip it and move Roam to Applications. It isn't signed by Apple, so the first open is blocked: go to System Settings, Privacy & Security, and choose **Open Anyway**. Then allow Roam under **Accessibility**; macOS may ask again after an update. On the other PC, Command acts as Control and Control acts as the Windows key. Control+Option+Esc is Heel.
+
+**Windows:** download `roam-setup.exe` from the latest GitHub release and run it on both PCs. It installs for your user only and needs no admin rights. It isn't code-signed, so Windows may show SmartScreen once: choose **More info**, then **Run anyway**.
 
 ## Build
 1. Install Rust: https://rustup.rs (defaults are fine).

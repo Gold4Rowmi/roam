@@ -79,6 +79,13 @@ The signing key is the Actions secret `ROAM_SIGNING_KEY`; the public half is in 
 - Controls follow the book's `.btn` and `.field`: button labels in Plex Mono 15 sentence case; Cartridge Grey frames and drops; the filled button keeps a Black edge and a #5B6270 drop; disabled is Sunken with no drop. The code field is 44 px tall and its frame goes blue while focused, red in the error state.
 - Tap Rommel five times: grin and bubbles. One tap: alert and woof.
 
+## Mac (Apple silicon, unsigned)
+- `src/mac.rs` is compiled as `win` and `src/mac_gui.rs` as `gui`, so `update.rs` and `net.rs` stay shared. `mac.rs` mirrors `win.rs`'s connection loops (a `shortcut:` until the Mac is proven). `brand.rs` holds the shared pixels, colours and sounds; GDI drawing is in `brand_gdi.rs`.
+- The protocol is unchanged: keys travel as Windows virtual keys and buttons as raw-input flags, and only the Mac translates (`keymap.rs`, tested on every platform). Command acts as Control on the other PC and Control as the Windows key.
+- Needs the Accessibility permission. Unsigned means ad hoc: the first open needs Open Anyway in Privacy & Security, and macOS can ask for Accessibility again after each update, because the permission follows the binary's hash. A $99 Developer ID fixes both.
+- `cargo check --target aarch64-apple-darwin` works from Windows. `.github/workflows/mac.yml` tests, builds, launches and screenshots on a real Mac; pushing the `mac` branch publishes a `mac-test` prerelease, and a tag adds `roam-mac`, its `.sig` and `Roam-mac.zip` to the release. The updater swaps only the binary inside `Roam.app`.
+- Not on the Mac yet: the code box's typing filter, Tab across buttons, the bubbles egg.
+
 ## Settings on disk
 `%APPDATA%\ROWMI\Roam\roam.code`, migrated once from beside the exe. Line 1: pairing code. Line 2: `left top width height edge` of the chosen host monitor (physical pixels) and edge number. `trusted.txt` beside it: one `CODE NAME` per PC that has ever connected (`src/trust.rs`, newest first, 8 kept, one per name). The installer has an unticked task that adds a Startup shortcut.
 

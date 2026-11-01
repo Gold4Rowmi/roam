@@ -4,14 +4,16 @@ use crate::signing::{message, PUBLIC_KEY};
 use crate::{brand, gui};
 use ed25519_dalek::{Signature, VerifyingKey};
 use std::path::{Path, PathBuf};
-use std::ptr::{null, null_mut};
 use std::sync::Mutex;
 use std::time::Duration;
-use windows_sys::Win32::Networking::WinHttp::*;
 
 const REPO: &str = "Gold4Rowmi/roam";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAX_DOWNLOAD: usize = 64 << 20; // far above the real exe; stops a bad server filling memory
+#[cfg(windows)]
+const ASSET: &str = "roam.exe";
+#[cfg(not(windows))]
+const ASSET: &str = "roam-mac";
 
 static AVAILABLE: Mutex<Option<String>> = Mutex::new(None);
 
@@ -39,6 +41,8 @@ fn verify(key: &[u8; 32], version: &str, exe: &[u8], sig: &[u8]) -> bool {
 fn swap(exe: &Path, new: &[u8]) -> std::io::Result<()> {
     let (tmp, old) = (exe.with_file_name("roam.new"), exe.with_file_name("roam.old"));
     std::fs::write(&tmp, new)?;
+    #[cfg(unix)]
+    std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
     let _ = std::fs::remove_file(&old);
     let moved = std::fs::rename(exe, &old).and_then(|_| {
         std::fs::rename(&tmp, exe).inspect_err(|_| { let _ = std::fs::rename(&old, exe); })
@@ -47,8 +51,19 @@ fn swap(exe: &Path, new: &[u8]) -> std::io::Result<()> {
     moved
 }
 
-/// HTTPS GET through WinHTTP. Follows redirects; None on any failure or a non-200 reply.
+/// HTTPS GET through the curl every Mac ships. Follows redirects; None on any failure or a non-200 reply.
+#[cfg(not(windows))]
 fn get(url: &str) -> Option<Vec<u8>> {
+    let max = MAX_DOWNLOAD.to_string();
+    let out = std::process::Command::new("/usr/bin/curl").args(["-fsSL", "--proto", "=https", "--max-filesize", &max, "-A", "ROWMI-Roam", url]).output().ok()?;
+    out.status.success().then_some(out.stdout)
+}
+
+/// HTTPS GET through WinHTTP. Follows redirects; None on any failure or a non-200 reply.
+#[cfg(windows)]
+fn get(url: &str) -> Option<Vec<u8>> {
+    use std::ptr::null;
+    use windows_sys::Win32::Networking::WinHttp::*;
     let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain([0]).collect() };
     let (host, path) = url.strip_prefix("https://")?.split_once('/')?;
     let (host, path) = (wide(host), wide(&format!("/{path}")));
@@ -62,7 +77,10 @@ fn get(url: &str) -> Option<Vec<u8>> {
     }
 }
 
+#[cfg(windows)]
 unsafe fn read_reply(req: *mut core::ffi::c_void) -> Option<Vec<u8>> {
+    use std::ptr::{null, null_mut};
+    use windows_sys::Win32::Networking::WinHttp::*;
     if WinHttpSendRequest(req, null(), 0, null(), 0, 0, 0) == 0 || WinHttpReceiveResponse(req, null_mut()) == 0 { return None }
     let (mut code, mut size) = (0u32, 4u32);
     WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, null(), &mut code as *mut _ as _, &mut size, null_mut());
@@ -104,7 +122,7 @@ pub fn start() {
 
 fn download_and_swap(v: &str) -> Result<PathBuf, &'static str> {
     let exe = std::env::current_exe().map_err(|_| "Could not find the Roam app file. Nothing was changed.")?;
-    let url = format!("https://github.com/{REPO}/releases/download/v{v}/roam.exe");
+    let url = format!("https://github.com/{REPO}/releases/download/v{v}/{ASSET}");
     let (new, sig) = get(&url).zip(get(&format!("{url}.sig")))
         .ok_or("The download did not finish. Check the connection and press Update again.")?;
     if !verify(&PUBLIC_KEY, v, &new, &sig) {
