@@ -27,7 +27,7 @@ const ID_STOP: isize = 5;
 const ID_UPDATE: isize = 7;
 const ID_PEER: isize = 8; // 8, 9 and 10: one button per trusted PC found
 const MAX_PEERS: usize = 3; // shortcut: the 3 first alphabetically show, raise it when the window can take more rows
-const STYLE: u32 = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+const STYLE: u32 = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN; // paint() must not cover the controls
 const HEIGHT: i32 = 530;
 const ID_BACK: isize = 20; // the About screen's button
 const SC_ABOUT: usize = 0x10; // our item in the window menu; system commands use the top bits
@@ -699,9 +699,28 @@ unsafe fn title_band(hdc: HDC, f: Face) {
     brand::fill(hdc, &prect(0, 64, 360, 1), GREY);
 }
 
+/// Draws off screen, then copies in one go: painting in place flashes every fill.
+unsafe fn buffered(screen: HDC, w: i32, h: i32, draw: impl FnOnce(HDC)) {
+    let hdc = CreateCompatibleDC(screen);
+    let bmp = CreateCompatibleBitmap(screen, w, h);
+    let old = SelectObject(hdc, bmp as _);
+    draw(hdc);
+    BitBlt(screen, 0, 0, w, h, hdc, 0, 0, SRCCOPY);
+    SelectObject(hdc, old);
+    DeleteObject(bmp as _);
+    DeleteDC(hdc);
+}
+
 unsafe fn paint(hwnd: HWND) {
     let mut ps: PAINTSTRUCT = zeroed();
-    let hdc = BeginPaint(hwnd, &mut ps);
+    let screen = BeginPaint(hwnd, &mut ps);
+    let mut c: RECT = zeroed();
+    GetClientRect(hwnd, &mut c);
+    buffered(screen, c.right, c.bottom, |hdc| paint_window(hdc));
+    EndPaint(hwnd, &ps);
+}
+
+unsafe fn paint_window(hdc: HDC) {
     let tick = BOOT.load(Relaxed);
     if tick > 0 {
         paint_boot(hdc, tick as i32);
@@ -717,11 +736,10 @@ unsafe fn paint(hwnd: HWND) {
         }
         pixel_text(hdc, &prect(16 + code_dx(), 80, 328, 16), 16, "Pairing code", BLACK, false);
         pixel_text(hdc, &prect(16, 152, 328, 16), 16, "Where is the other PC", BLACK, false);
-        let code_frame = if ERR.load(Relaxed) { DANGER } else if GetFocus() == GetDlgItem(hwnd, ID_CODE as i32) { BLUE } else { GREY };
+        let code_frame = if ERR.load(Relaxed) { DANGER } else if GetFocus() == GetDlgItem(MAIN.load(Relaxed) as HWND, ID_CODE as i32) { BLUE } else { GREY };
         brand::frame(hdc, &prect(16 + code_dx(), 96, 328, 44), PAPER, code_frame); // behind the code box
         paint_panel(hdc);
     }
-    EndPaint(hwnd, &ps);
 }
 
 /// Boot, 1.1 s on 55 ms ticks, following tokens/rowmi.json: the word steps down six rows per claw tap
