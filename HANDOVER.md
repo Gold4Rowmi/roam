@@ -14,7 +14,8 @@ A Windows-only Rust GUI app that shares one mouse and keyboard between two PCs o
 - **Installer tested on one PC:** `installer.iss` built with Inno Setup 6.7.3; silent install, launch and uninstall all worked, without admin rights. `roam-setup.exe` is unsigned, so SmartScreen will warn once.
 - **Released:** v0.2.0 is on GitHub, built by the release workflow.
 - **Crossing:** the owner has used it between two real PCs on 0.2.0.
-- **Not yet run:** an update from a real GitHub release, the tray balloon, the arrival Rommel during a real crossing (it was only triggered directly). Treat these as untested until you see them work.
+- **Real update confirmed:** the installed 0.2.0 offered 0.2.1 from GitHub, updated itself on one press and relaunched as 0.2.1. That release is live.
+- **Not yet run:** the tray balloon, the arrival Rommel during a real crossing (it was only triggered directly). Treat these as untested until you see them work.
 
 ## Build
 Windows with Rust (MSVC toolchain): `cargo test` then `cargo build --release`, or double-click `build.cmd` (runs both, leaves `roam.exe` beside it). `build.rs` embeds `roam.ico` using the `winresource` crate (needs `rc.exe`). Dependencies: `chacha20poly1305`, `ed25519-dalek`, `sha2`, `windows-sys 0.59`; build-dep `winresource`.
@@ -66,7 +67,14 @@ The signing key is the Actions secret `ROAM_SIGNING_KEY`; the public half is in 
 - Tap Rommel five times: grin and bubbles. One tap: alert and woof.
 
 ## Settings on disk
-`%APPDATA%\ROWMI\Roam\roam.code`, migrated once from beside the exe. Line 1: pairing code. Line 2: `left top width height edge` of the chosen host monitor (physical pixels) and edge number.
+`%APPDATA%\ROWMI\Roam\roam.code`, migrated once from beside the exe. Line 1: pairing code. Line 2: `left top width height edge` of the chosen host monitor (physical pixels) and edge number. `trusted.txt` beside it: one `CODE NAME` per PC that has ever connected (`src/trust.rs`, newest first, 8 kept, one per name). The installer has an unticked task that adds a Startup shortcut.
+
+## Finding trusted PCs (`net::find`, `gui::start_finder`)
+- Only runs on the setup screen and only if `trusted.txt` has entries. Binds port 47321, sends `Msg::Here(name)` every 2 s to the broadcast address under each trusted code's key (random nonce), and listens. Starting a role bumps `FINDER`, which stops it; `client()` then takes the port (`bind_lan` retries for 3 s).
+- A found PC is one whose beacon decrypts under a trusted code, or whose host-role `Ping` does (`wants`: its host is looking for us, so the button reads Allow). Entries expire after 5 s without a packet.
+- Pressing a button puts that PC's code in the code box and calls `start()` as host (Roam onto) or client (Allow), so the code is visible and saved like a normal pairing. The controlled PC never connects without its own press.
+- `Ping` now carries the sender's computer name (`COMPUTERNAME`); a connection that works calls `trust::remember`. Old builds send an empty name, which is never trusted. `Here` and the name in `Ping` are additive: 0.2.1 ignores them, and `PROTOCOL` stays 1.
+- Right-click (or the menu key) on a found PC offers Forget. Two PCs with the same computer name can't be told apart.
 
 ## Brand rules that must not regress
 One pixel unit per lockup; whole-step scaling only; two typefaces (Silkscreen at 8/16/24/32/64 only, IBM Plex Mono 400/600); one shell per app (Roam = Mint `#2FC7A1`, black text on it); Cursor Blue means selected or focused only; one Rommel per screen, Idle by default, Sleepy only for offline, he reacts and never talks; the frame (1 px border, 2 px hard drop, 6 px radius) is the only depth; every input answers with a movement and a sound; honest by default, no dark patterns. Full text in `docs/brand/SKILL.md` and `rowmi.json`.

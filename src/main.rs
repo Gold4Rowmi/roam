@@ -8,6 +8,8 @@ mod gui;
 #[cfg(windows)]
 mod signing;
 #[cfg(windows)]
+mod trust;
+#[cfg(windows)]
 mod update;
 #[cfg(windows)]
 mod win;

@@ -22,12 +22,16 @@ SolidCompression=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 
+[Tasks]
+Name: "startup"; Description: "Open Roam when I sign in to Windows"; Flags: unchecked
+
 [Files]
 Source: "target\release\roam.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "assets\fonts\*-OFL.txt"; DestDir: "{app}\licences"; Flags: ignoreversion
 
 [Icons]
 Name: "{userprograms}\ROWMI Roam"; Filename: "{app}\roam.exe"
+Name: "{userstartup}\ROWMI Roam"; Filename: "{app}\roam.exe"; Tasks: startup
 
 [Run]
 Filename: "{app}\roam.exe"; Description: "Open ROWMI Roam"; Flags: nowait postinstall skipifsilent

@@ -2,7 +2,7 @@
 //! monitor layout with a draggable "Other PC" box, two buttons, a status line, and a tray icon.
 //! Plain Win32 drawn by hand to the brand: Paper ground, 1 px frame + 2 px drop, two typefaces.
 use crate::brand::{self, Face, BLACK, BLUE, GREY, LIGHT, MINT, MUTED, PAPER, SUNKEN};
-use crate::{update, win};
+use crate::{net, trust, update, win};
 use chacha20poly1305::aead::{rand_core::RngCore, OsRng};
 use std::mem::{size_of, zeroed};
 use std::path::{Path, PathBuf};
@@ -26,9 +26,12 @@ const ID_STATUS: isize = 4;
 const ID_STOP: isize = 5;
 const ID_DEDICATION: isize = 6;
 const ID_UPDATE: isize = 7;
+const ID_PEER: isize = 8; // 8, 9 and 10: one button per trusted PC found
+const MAX_PEERS: usize = 3; // shortcut: the 3 first alphabetically show, raise it when the window can take more rows
 const STYLE: u32 = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
 const HEIGHT: i32 = 544;
-const UPDATE_ROW: i32 = 52; // the window grows by this when the Update button appears
+const ROW: i32 = 52; // the window grows by this for each extra button row: 44 tall plus an 8 gap
+const SETUP_HELP: &str = "Drag the mint box next to the monitor edge the other PC sits beside, then pick what this PC does.";
 const EM_SETREADONLY: u32 = 0xCF;
 const BS_OWNERDRAW: u32 = 0x0B;
 const WM_DRAWITEM: u32 = 0x2B;
@@ -45,6 +48,7 @@ const WM_TRAY: u32 = WM_APP + 1;
 const WM_REFRESH: u32 = WM_APP + 2; // worker threads post this; the UI thread applies PENDING
 const WM_CLOSE_NOW: u32 = WM_APP + 3; // the updater started the new exe; this one goes
 const WM_ARRIVED: u32 = WM_APP + 4;   // the cursor landed here at (wparam, lparam)
+const WM_PEERS: u32 = WM_APP + 5;     // the finder thread changed PEERS
 const TOAST_SIZE: i32 = 96;           // 12 units of Rommel's tile at 8 px
 const TOAST_MS: u32 = 800;            // a reaction, so under a second
 const TIMER_TOAST: usize = 5;
@@ -78,6 +82,9 @@ static ICONS: [AtomicUsize; 3] = [AtomicUsize::new(0), AtomicUsize::new(0), Atom
 static PENDING: Mutex<(Option<String>, Option<u8>, Option<bool>, Option<String>)> = Mutex::new((None, None, None, None));
 static MONITORS: Mutex<Vec<RECT>> = Mutex::new(Vec::new()); // physical pixels, primary first
 static DRAG: Mutex<Option<((i32, i32), (i32, i32))>> = Mutex::new(None); // box top-left + grab offset
+static PEERS: Mutex<Vec<net::Found>> = Mutex::new(Vec::new());  // trusted PCs heard right now, from the finder thread
+static SHOWN: Mutex<Vec<net::Found>> = Mutex::new(Vec::new());  // what the buttons currently show, to spot new arrivals
+static FINDER: AtomicUsize = AtomicUsize::new(0);                // generation: bumping it stops the running finder
 static BAR: AtomicUsize = AtomicUsize::new(0);  // launch-bar step while searching
 static TAPS: AtomicU8 = AtomicU8::new(0);        // taps on Rommel, for the easter egg
 static EGG: AtomicU8 = AtomicU8::new(0);         // bubble frame while the egg plays
@@ -161,23 +168,23 @@ unsafe fn flagged_visible(hwnd: HWND, id: isize) -> bool {
 }
 
 /// Sizes the window and every control for the current DPI. Runs at launch, when the window
-/// crosses to a monitor with another scale, and when the Update button appears.
+/// crosses to a monitor with another scale, and when a found-PC or Update button appears or goes.
 unsafe fn layout(hwnd: HWND) {
-    let grew = if flagged_visible(hwnd, ID_UPDATE) { UPDATE_ROW } else { 0 };
+    let peers = (0..MAX_PEERS as isize).filter(|i| flagged_visible(hwnd, ID_PEER + i)).count() as i32;
+    let grew = (peers + flagged_visible(hwnd, ID_UPDATE) as i32) * ROW;
     let mut r = RECT { left: 0, top: 0, right: px(360), bottom: px(HEIGHT + grew) };
     AdjustWindowRectExForDpi(&mut r, STYLE, 0, 0, DPI.load(Relaxed) as u32);
     SetWindowPos(hwnd, null_mut(), 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-    for (id, x, y, w, h) in [
-        (ID_CODE, 20, 99, 320, 34), // EDIT paints outside its window if shorter than its line, over the frame
-        (ID_HOST, 16, 364, 328, 44),
-        (ID_CLIENT, 16, 416, 328, 44),
-        (ID_STOP, 16, 364, 328, 44),
-        (ID_UPDATE, 16, 468, 328, 44),
-        (ID_STATUS, 16, 466 + grew, 328, 56),
-        (ID_DEDICATION, 16, 524 + grew, 328, 16),
-    ] {
-        MoveWindow(GetDlgItem(hwnd, id as i32), px(x), px(y), px(w), px(h), 1);
-    }
+    let mut place = |id: isize, y: i32, h: i32| { MoveWindow(GetDlgItem(hwnd, id as i32), px(16), px(y), px(328), px(h), 1); };
+    for i in 0..MAX_PEERS as i32 { place(ID_PEER + i as isize, 468 + i * ROW, 44) }
+    place(ID_HOST, 364, 44);
+    place(ID_CLIENT, 416, 44);
+    place(ID_STOP, 364, 44);
+    place(ID_UPDATE, 468 + peers * ROW, 44);
+    place(ID_STATUS, 466 + grew, 56);
+    place(ID_DEDICATION, 524 + grew, 16);
+    // an EDIT paints ~2 px past its own edge: keep it well inside the frame
+    MoveWindow(GetDlgItem(hwnd, ID_CODE as i32), px(20), px(102), px(320), px(28), 1);
 }
 
 /// Type for the current DPI: Silkscreen 16/24/32 and IBM Plex Mono 400/600, with fallbacks.
@@ -190,7 +197,7 @@ unsafe fn load_type(hwnd: HWND) {
         let f = brand::font(if weight == 600 { "IBM Plex Mono SemiBold" } else { "IBM Plex Mono" }, px(size), weight, false);
         if f.is_null() { brand::font("Consolas", px(size), weight, false) } else { f }
     };
-    let old = [(plex(14, 400), &PLEX[0]), (plex(12, 400), &PLEX[1]), (plex(24, 600), &PLEX[2])].map(|(f, slot)| slot.swap(f as usize, Relaxed));
+    let old = [(plex(14, 400), &PLEX[0]), (plex(12, 400), &PLEX[1]), (plex(20, 600), &PLEX[2])].map(|(f, slot)| slot.swap(f as usize, Relaxed));
     for (font, ids) in [(0, &[ID_HOST, ID_CLIENT, ID_STOP, ID_STATUS][..]), (1, &[ID_DEDICATION]), (2, &[ID_CODE])] {
         for id in ids { SendMessageW(GetDlgItem(hwnd, *id as i32), WM_SETFONT, PLEX[font].load(Relaxed), 1); }
     }
@@ -251,6 +258,79 @@ unsafe fn announce(hwnd: HWND, v: &str) {
         d.szInfoTitle[..title.len()].copy_from_slice(&title);
         d.szInfo[..info.len()].copy_from_slice(&info);
         Shell_NotifyIconW(NIM_MODIFY, &d);
+    }
+}
+
+/// Finds the PCs this one has connected to before while it sits on the setup screen, and shows a
+/// button for each. A later call replaces the running finder (after Forget); starting a role stops it.
+fn start_finder() {
+    let gen = FINDER.fetch_add(1, Relaxed) + 1;
+    let mut codes: Vec<String> = trust::load().into_iter().map(|(code, _)| code).collect();
+    if codes.is_empty() { return } // nothing is sent until there is someone to look for
+    codes.sort();
+    codes.dedup();
+    std::thread::spawn(move || {
+        let Some(sock) = net::bind_lan() else { return };
+        let _ = sock.set_broadcast(true);
+        net::find(sock, win::BROADCAST, &win::name(), &codes, || FINDER.load(Relaxed) != gen, |list| {
+            if FINDER.load(Relaxed) != gen { return }
+            *PEERS.lock().unwrap() = list.to_vec();
+            unsafe { PostMessageW(MAIN.load(Relaxed) as HWND, WM_PEERS, 0, 0) };
+        });
+    });
+}
+
+/// One button per found PC. "Allow" when its host is already looking for us, else "Roam onto".
+unsafe fn show_peers(hwnd: HWND) {
+    let list = PEERS.lock().unwrap().clone();
+    let prev = std::mem::replace(&mut *SHOWN.lock().unwrap(), list.clone());
+    for i in 0..MAX_PEERS {
+        let b = GetDlgItem(hwnd, (ID_PEER + i as isize) as i32);
+        match list.get(i) {
+            Some(f) => {
+                let label = if f.wants { format!("Allow {}", f.name) } else { format!("Roam onto {}", f.name) };
+                SetWindowTextW(b, wide(&label).as_ptr());
+                ShowWindow(b, SW_SHOW);
+                InvalidateRect(b, null(), 0);
+            }
+            None => { ShowWindow(b, SW_HIDE); }
+        }
+    }
+    layout(hwnd);
+    InvalidateRect(hwnd, null(), 0);
+    if list.iter().any(|f| !prev.contains(f)) { // someone new, or someone now asking: something arrived
+        brand::play(brand::TAG);
+        react(hwnd, Face::Alert, 800);
+    }
+    status(&match list.iter().find(|f| f.wants) {
+        Some(f) => format!("{} wants to use this PC's mouse and keyboard. Press Allow, or ignore it.", f.name),
+        None if list.is_empty() => SETUP_HELP.to_string(),
+        None => "Found a trusted PC. Press its button, or right-click it to forget it.".to_string(),
+    });
+}
+
+/// Right-click, or the menu key, on a found PC: Forget it, so it is no longer found or trusted.
+unsafe fn forget_menu(hwnd: HWND, i: usize, from_keyboard: bool) {
+    let Some(f) = PEERS.lock().unwrap().get(i).cloned() else { return };
+    let m = CreatePopupMenu();
+    AppendMenuW(m, 0, 1, wide(&format!("Forget {}", f.name)).as_ptr());
+    let mut p: POINT = zeroed();
+    if from_keyboard { // no mouse: open it under the button
+        let mut r: RECT = zeroed();
+        GetWindowRect(GetDlgItem(hwnd, (ID_PEER + i as isize) as i32), &mut r);
+        (p.x, p.y) = (r.left + px(16), r.bottom);
+    } else {
+        GetCursorPos(&mut p);
+    }
+    SetForegroundWindow(hwnd); // required or the menu won't close on click-away
+    let pick = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, p.x, p.y, 0, hwnd, null());
+    DestroyMenu(m);
+    if pick == 1 {
+        trust::forget(&f.name);
+        PEERS.lock().unwrap().retain(|x| x.name != f.name);
+        start_finder();
+        show_peers(hwnd);
+        brand::play(brand::OFF);
     }
 }
 
@@ -477,7 +557,7 @@ unsafe fn paint(hwnd: HWND) {
     if tick > 0 {
         paint_boot(hdc, tick as i32);
     } else {
-        brand::fill(hdc, &prect(0, 0, 360, HEIGHT + UPDATE_ROW), PAPER);
+        brand::fill(hdc, &prect(0, 0, 360, HEIGHT + (MAX_PEERS as i32 + 1) * ROW), PAPER);
         // title band: lockup on the left, app name on the chin line at the right, one unit for all
         let u = px(4);
         brand::fill(hdc, &prect(0, 0, 360, 64), MINT);
@@ -522,6 +602,7 @@ unsafe fn end_boot(hwnd: HWND) {
     for id in [ID_CODE, ID_HOST, ID_CLIENT, ID_STATUS, ID_DEDICATION] { ShowWindow(GetDlgItem(hwnd, id as i32), SW_SHOW); }
     SetFocus(GetDlgItem(hwnd, ID_CODE as i32));
     InvalidateRect(hwnd, null(), 1);
+    show_peers(hwnd); // anything found while the boot screen was up
 }
 
 /// Owner-drawn button: the frame, pixel label, A glyph on the filled one, blue only for focus.
@@ -612,7 +693,8 @@ pub fn run() {
         ctl("BUTTON", "Be controlled", WS_TABSTOP | BS_OWNERDRAW, ID_CLIENT);
         ctl("BUTTON", "Heel", WS_TABSTOP | BS_OWNERDRAW, ID_STOP);
         ctl("BUTTON", "Update", WS_TABSTOP | BS_OWNERDRAW, ID_UPDATE);
-        ctl("STATIC", "Drag the mint box next to the monitor edge the other PC sits beside, then pick what this PC does.", 0, ID_STATUS);
+        for i in 0..MAX_PEERS as isize { ctl("BUTTON", "", WS_TABSTOP | BS_OWNERDRAW, ID_PEER + i); }
+        ctl("STATIC", SETUP_HELP, 0, ID_STATUS);
         ctl("STATIC", &format!("Made in memory of Rommel. v{}", update::VERSION), 0, ID_DEDICATION);
         load_type(hwnd);
         layout(hwnd);
@@ -632,6 +714,7 @@ pub fn run() {
         SetTimer(hwnd, TIMER_BOOT, if anim != 0 { BOOT_TICK } else { 800 }, None);
         ShowWindow(hwnd, SW_SHOW);
         update::start();
+        start_finder();
 
         let mut msg: MSG = zeroed();
         while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
@@ -669,6 +752,9 @@ unsafe fn start(hwnd: HWND, id: isize) {
     d.szTip[..tip.len()].copy_from_slice(&tip);
     Shell_NotifyIconW(NIM_ADD, &d);
     STARTED.store(true, Relaxed);
+    FINDER.fetch_add(1, Relaxed); // a role owns the port now
+    PEERS.lock().unwrap().clear();
+    show_peers(hwnd); // hides the buttons; the status below replaces its text
     SetTimer(hwnd, TIMER_BAR, 120, None);
     status(if id == ID_HOST { "Looking for the other PC. This window tucks into the tray once they connect." }
            else { "Waiting. Type this code on the other PC and press Roam from this PC." });
@@ -713,6 +799,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     EnableWindow(GetDlgItem(hwnd, ID_UPDATE as i32), 0);
                     update::install();
                 }
+                _ if (ID_PEER..ID_PEER + MAX_PEERS as isize).contains(&id) => {
+                    let found = SHOWN.lock().unwrap().get((id - ID_PEER) as usize).cloned();
+                    if let Some(f) = found {
+                        // the same path as typing the code and pressing the button, so the code is visible and saved
+                        SetWindowTextW(GetDlgItem(hwnd, ID_CODE as i32), wide(&pretty(&f.code)).as_ptr());
+                        start(hwnd, if f.wants { ID_CLIENT } else { ID_HOST });
+                    }
+                }
                 _ => {}
             }
             0
@@ -750,6 +844,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_REFRESH => { refresh(hwnd); 0 }
         WM_CLOSE_NOW => { quit(hwnd); 0 }
         WM_ARRIVED => { show_toast(hwnd, wp as isize as i32, lp as i32); 0 }
+        WM_PEERS => { // while booting, end_boot shows whatever was found
+            if BOOT.load(Relaxed) == 0 && !STARTED.load(Relaxed) { show_peers(hwnd) }
+            0
+        }
+        WM_CONTEXTMENU => {
+            let i = GetDlgCtrlID(wp as HWND) as isize - ID_PEER;
+            if (0..MAX_PEERS as isize).contains(&i) { forget_menu(hwnd, i as usize, lp == -1); return 0 }
+            DefWindowProcW(hwnd, msg, wp, lp)
+        }
         WM_TIMER if wp == TIMER_TOAST => { KillTimer(hwnd, TIMER_TOAST); ShowWindow(TOAST.load(Relaxed) as HWND, SW_HIDE); 0 }
         WM_DPICHANGED => { // the window crossed to a monitor with another scale
             DPI.store((wp & 0xFFFF) as usize, Relaxed);

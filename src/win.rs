@@ -1,6 +1,7 @@
 //! Windows side: host captures input with low-level hooks + raw input, client injects with SendInput.
 use crate::gui::{arrived, status, tray, visible, TRAY_AWAY, TRAY_HERE, TRAY_OFF};
-use crate::net::{Link, Msg, CLIENT, HOST, MAX_CLIP, PORT};
+use crate::net::{bind_lan, Link, Msg, CLIENT, HOST, MAX_CLIP, PORT};
+use crate::trust;
 use std::mem::{size_of, zeroed};
 use std::net::{SocketAddr, UdpSocket};
 use std::ptr::{copy_nonoverlapping, null, null_mut};
@@ -16,7 +17,15 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 const CF_UNICODETEXT: u32 = 13;
 const VERSION_MISMATCH: &str = "The other PC runs a different Roam version. Update both PCs, then try again.";
-const BROADCAST: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::BROADCAST), PORT);
+pub const BROADCAST: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::BROADCAST), PORT);
+
+/// This PC's name as the other PC will show it.
+pub fn name() -> String { std::env::var("COMPUTERNAME").unwrap_or_else(|_| "this PC".into()) }
+
+/// A connection worked, so each side trusts the other from now on.
+fn trust_peer(code: &str, peer: &str) {
+    if !peer.is_empty() && peer != name() { trust::remember(code, peer) }
+}
 
 static REMOTE: AtomicBool = AtomicBool::new(false);
 /// Which edge of the host screen leads to the client: 0 right, 1 left, 2 top, 3 bottom.
@@ -92,9 +101,10 @@ pub fn host(secret: &str) {
     let sock = UdpSocket::bind("0.0.0.0:0").unwrap();
     sock.set_broadcast(true).unwrap(); // pings go to the whole LAN until the client answers
     let link = init(secret, sock, HOST, Some(BROADCAST));
-    std::thread::spawn(move || host_recv(link));
+    let code = secret.to_string();
+    std::thread::spawn(move || host_recv(link, &code));
     std::thread::spawn(move || loop {
-        link.send(&Msg::Ping);
+        link.send(&Msg::Ping(name()));
         std::thread::sleep(Duration::from_millis(500));
     });
     unsafe {
@@ -141,13 +151,13 @@ fn client_up() -> bool {
     LAST_PING.lock().unwrap().is_some_and(|t| t.elapsed() < Duration::from_secs(2))
 }
 
-fn host_recv(link: &Link) {
-    let (start, mut linked, mut warned) = (Instant::now(), false, false);
+fn host_recv(link: &Link, code: &str) {
+    let (start, mut linked, mut warned, mut peer) = (Instant::now(), false, false, String::new());
     loop {
         match link.recv() {
             Some(Msg::Leave(f)) => take_back(f),
             Some(Msg::Clip(s)) => clip_set(&s),
-            Some(Msg::Ping) => *LAST_PING.lock().unwrap() = Some(Instant::now()),
+            Some(Msg::Ping(n)) => { *LAST_PING.lock().unwrap() = Some(Instant::now()); peer = n }
             Some(Msg::Bye) => *LAST_PING.lock().unwrap() = None,
             _ => {}
         }
@@ -155,6 +165,7 @@ fn host_recv(link: &Link) {
         if linked != client_up() {
             linked = !linked;
             if linked {
+                trust_peer(code, &peer);
                 let (i, e) = target();
                 status(&format!("Connected. Move the mouse off the {} edge of monitor {}.", ["right", "left", "top", "bottom"][e as usize], i + 1));
                 tray(TRAY_HERE);
@@ -244,28 +255,35 @@ unsafe extern "system" fn key_hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT
 // ---------- client ----------
 
 pub fn client(secret: &str) {
-    let link = init(secret, UdpSocket::bind(("0.0.0.0", PORT)).unwrap(), CLIENT, None);
+    // an updated or restarted copy, or the finder, can still hold the port for a moment
+    let sock = bind_lan().expect("port 47321 is in use. Is another copy of Roam running?");
+    let link = init(secret, sock, CLIENT, None);
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(500));
-        link.send(&Msg::Ping);
+        link.send(&Msg::Ping(name()));
     });
     let mut edge = 0u8; // host's edge; we enter and leave through the opposite one
-    status("Waiting for the other PC. Type this code there and click \"Use this PC's mouse on another PC\".");
+    status("Waiting for the other PC. Type this code there and press Roam from this PC.");
     // what the host currently holds down here, so it can be released if control leaves or the host vanishes
     let mut held_keys: Vec<(u8, u8, bool)> = Vec::new();
     let mut held_buttons = 0u32; // MOUSEEVENTF_*UP flags to send
-    let (mut active, mut last_seen, mut linked) = (false, Instant::now(), false);
+    // nothing heard yet: start already timed out, so "Connected" waits for a real ping
+    let (mut active, mut last_seen, mut linked, mut peer) = (false, Instant::now() - Duration::from_secs(3), false, String::new());
     loop {
         let msg = link.recv();
         if link.mismatch() { status(VERSION_MISMATCH) }
         match &msg {
             Some(Msg::Bye) => last_seen = Instant::now() - Duration::from_secs(3), // counts as already timed out
-            Some(_) => last_seen = Instant::now(),
+            Some(m) => {
+                last_seen = Instant::now();
+                if let Msg::Ping(n) = m { peer = n.clone() }
+            }
             None => {}
         }
         if linked != (last_seen.elapsed() < Duration::from_secs(2)) {
             linked = !linked;
             if linked {
+                trust_peer(secret, &peer);
                 status("Connected. The other PC's mouse can now come onto this screen.");
                 tray(TRAY_AWAY);
                 visible(false);
