@@ -63,14 +63,16 @@ The signing key is the Actions secret `ROAM_SIGNING_KEY`; the public half is in 
 - Tray icon is Rommel on a colour: Mint = mouse here, Paper = mouse on the other PC, Cartridge Grey with sleepy Rommel = not connected.
 - Layout panel draws the real monitors (primary first) and a draggable "Other" box that snaps to the nearest monitor edge.
 - `layout()` and `load_type()` hold all sizes and fonts, and rerun on `WM_DPICHANGED`. The EDIT box must stay taller than its font's line or it paints over its frame.
-- When the mouse lands on a PC, Happy Rommel shows beside the cursor for 800 ms in a click-through window that never takes focus.
+- When the mouse lands on a PC, a 4-frame pixel sparkle (240 ms, the brand's pop sparkle) shows on the cursor in a click-through colour-keyed window that never takes focus. Only the PC it arrived on shows it.
+- Wrong input bonks: the code box and its frame shake in 5 whole-pixel steps over 300 ms (the brand's bonk) with the error sound. Triggers: a key a code can't hold or an 11th character (the box is subclassed in `code_proc`), and pressing a button with a code that isn't 10 characters. Pasting bypasses the key filter; `start()` still catches a bad code.
+- Title band: the wordmark, then "Roam" as a Silkscreen 16 label on its baseline, as the brand's title-bar spec says. A 32 px app name next to the wordmark read as two competing typefaces.
 - Tap Rommel five times: grin and bubbles. One tap: alert and woof.
 
 ## Settings on disk
 `%APPDATA%\ROWMI\Roam\roam.code`, migrated once from beside the exe. Line 1: pairing code. Line 2: `left top width height edge` of the chosen host monitor (physical pixels) and edge number. `trusted.txt` beside it: one `CODE NAME` per PC that has ever connected (`src/trust.rs`, newest first, 8 kept, one per name). The installer has an unticked task that adds a Startup shortcut.
 
 ## Finding trusted PCs (`net::find`, `gui::start_finder`)
-- Only runs on the setup screen and only if `trusted.txt` has entries. Binds port 47321, sends `Msg::Here(name)` every 2 s to the broadcast address under each trusted code's key (random nonce), and listens. Starting a role bumps `FINDER`, which stops it; `client()` then takes the port (`bind_lan` retries for 3 s).
+- Only runs on the setup screen and only if `trusted.txt` has entries or `roam.code` holds a code (so PCs paired before trust was recorded are found too; Forget then empties that code as well). The PC being looked for only has to be at the setup screen, not waiting. Binds port 47321, sends `Msg::Here(name)` every 2 s to the broadcast address under each trusted code's key (random nonce), and listens. Starting a role bumps `FINDER`, which stops it; `client()` then takes the port (`bind_lan` retries for 3 s).
 - A found PC is one whose beacon decrypts under a trusted code, or whose host-role `Ping` does (`wants`: its host is looking for us, so the button reads Allow). Entries expire after 5 s without a packet.
 - Pressing a button puts that PC's code in the code box and calls `start()` as host (Roam onto) or client (Allow), so the code is visible and saved like a normal pairing. The controlled PC never connects without its own press.
 - `Ping` now carries the sender's computer name (`COMPUTERNAME`); a connection that works calls `trust::remember`. Old builds send an empty name, which is never trusted. `Here` and the name in `Ping` are additive: 0.2.1 ignores them, and `PROTOCOL` stays 1.

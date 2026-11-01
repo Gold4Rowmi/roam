@@ -49,9 +49,20 @@ const WM_REFRESH: u32 = WM_APP + 2; // worker threads post this; the UI thread a
 const WM_CLOSE_NOW: u32 = WM_APP + 3; // the updater started the new exe; this one goes
 const WM_ARRIVED: u32 = WM_APP + 4;   // the cursor landed here at (wparam, lparam)
 const WM_PEERS: u32 = WM_APP + 5;     // the finder thread changed PEERS
-const TOAST_SIZE: i32 = 96;           // 12 units of Rommel's tile at 8 px
-const TOAST_MS: u32 = 800;            // a reaction, so under a second
-const TIMER_TOAST: usize = 5;
+const SPARK_U: i32 = 4;               // one spark pixel, the same unit as the title lockup
+const SPARK_TICK: u32 = 60;           // 4 frames = 240 ms, the brand's pop sparkle
+const TIMER_SPARK: usize = 5;
+const BONK_TICK: u32 = 60;            // 5 frames = 300 ms, the brand's bonk
+const TIMER_BONK: usize = 6;
+const BONK: [i32; 5] = [-4, 4, -2, 2, 0]; // sideways steps in px at 96 dpi, ending at rest
+const KEY_COLOUR: u32 = 0xFF00FF;     // the spark window's transparent colour
+/// The spark's cells around the cursor, one list per frame: a dot, a plus, the full star, a plus.
+const SPARK: [&[(i32, i32)]; 4] = [
+    &[(0, 0)],
+    &[(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)],
+    &[(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (2, 0), (-2, 0), (0, 2), (0, -2), (3, 0), (-3, 0), (0, 3), (0, -3), (1, 1), (-1, 1), (1, -1), (-1, -1)],
+    &[(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)],
+];
 const TIMER_BOOT: usize = 1;
 const TIMER_FACE: usize = 2;
 const TIMER_BAR: usize = 3;
@@ -72,7 +83,10 @@ static PIXEL16: AtomicUsize = AtomicUsize::new(0); // Silkscreen 16, or null -> 
 static PIXEL24: AtomicUsize = AtomicUsize::new(0);
 static PIXEL32: AtomicUsize = AtomicUsize::new(0);
 static PLEX: [AtomicUsize; 3] = [AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0)]; // body, caption, code
-static TOAST: AtomicUsize = AtomicUsize::new(0);
+static SPARK_WIN: AtomicUsize = AtomicUsize::new(0);
+static SPARK_AT: AtomicU8 = AtomicU8::new(0); // spark frame showing, 0..4
+static BONK_AT: AtomicU8 = AtomicU8::new(0);  // bonk frame showing, 1..=5, 0 = at rest
+static EDIT_PROC: AtomicUsize = AtomicUsize::new(0); // the code box's original window procedure
 static STARTED: AtomicBool = AtomicBool::new(false);
 static BOOT: AtomicU8 = AtomicU8::new(0); // boot tick 1..=20 while booting, 0 when done
 static FACE: AtomicU8 = AtomicU8::new(0);
@@ -184,7 +198,7 @@ unsafe fn layout(hwnd: HWND) {
     place(ID_STATUS, 466 + grew, 56);
     place(ID_DEDICATION, 524 + grew, 16);
     // an EDIT paints ~2 px past its own edge: keep it well inside the frame
-    MoveWindow(GetDlgItem(hwnd, ID_CODE as i32), px(20), px(102), px(320), px(28), 1);
+    place_code(hwnd);
 }
 
 /// Type for the current DPI: Silkscreen 16/24/32 and IBM Plex Mono 400/600, with fallbacks.
@@ -204,44 +218,76 @@ unsafe fn load_type(hwnd: HWND) {
     for f in old { DeleteObject(f as _); } // only now, when no control still holds them
 }
 
-unsafe extern "system" fn toast_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+/// 9 x 9 cells: the star reaches 3 from the middle, and the outline one more.
+fn spark_size() -> i32 { 9 * px(SPARK_U) }
+
+unsafe extern "system" fn spark_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if msg != WM_PAINT { return DefWindowProcW(hwnd, msg, wp, lp) }
     let mut ps: PAINTSTRUCT = zeroed();
     let hdc = BeginPaint(hwnd, &mut ps);
-    let u = px(TOAST_SIZE) / 12;
-    brand::fill(hdc, &brand::rect(0, 0, 12 * u + 2, 12 * u + 2), BLACK);
-    brand::fill(hdc, &brand::rect(1, 1, 12 * u, 12 * u), MINT);
-    brand::draw_rommel(hdc, 1 + u, 1 + u, u, Face::Happy, &LIGHT);
+    let (u, cells) = (px(SPARK_U), SPARK[SPARK_AT.load(Relaxed) as usize]);
+    brand::fill(hdc, &brand::rect(0, 0, 9 * u, 9 * u), KEY_COLOUR);
+    let cell = |(cx, cy): (i32, i32), c: u32| brand::fill(hdc, &brand::rect((cx + 4) * u, (cy + 4) * u, u, u), c);
+    for (cx, cy) in cells { for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] { cell((cx + dx, cy + dy), BLACK) } } // outline, so it shows on any ground
+    for c in cells { cell(*c, if *c == (0, 0) { PAPER } else { MINT }) }
     EndPaint(hwnd, &ps);
     0
 }
 
 /// Click-through and never takes focus, so it can't get in the way of what the mouse does next.
-unsafe fn make_toast() {
-    let cls = wide("ROWMI.roam.toast");
+unsafe fn make_spark() {
+    let cls = wide("ROWMI.roam.spark");
     let wc = WNDCLASSW {
-        style: 0, lpfnWndProc: Some(toast_proc), cbClsExtra: 0, cbWndExtra: 0, hInstance: null_mut(), hIcon: null_mut(),
+        style: 0, lpfnWndProc: Some(spark_proc), cbClsExtra: 0, cbWndExtra: 0, hInstance: null_mut(), hIcon: null_mut(),
         hCursor: null_mut(), hbrBackground: null_mut(), lpszMenuName: null(), lpszClassName: cls.as_ptr(),
     };
     RegisterClassW(&wc);
     let t = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_LAYERED,
         cls.as_ptr(), null(), WS_POPUP, 0, 0, 0, 0, null_mut(), null_mut(), null_mut(), null());
-    SetLayeredWindowAttributes(t, 0, 255, LWA_ALPHA);
-    TOAST.store(t as usize, Relaxed);
+    SetLayeredWindowAttributes(t, KEY_COLOUR, 0, LWA_COLORKEY);
+    SPARK_WIN.store(t as usize, Relaxed);
 }
 
-/// Rommel beside the cursor, on the side towards the middle of the screen so he is never off it.
-unsafe fn show_toast(hwnd: HWND, x: i32, y: i32) {
-    let t = TOAST.load(Relaxed) as HWND;
-    let size = px(TOAST_SIZE) / 12 * 12 + 2;
-    let mut m: MONITORINFO = zeroed();
-    m.cbSize = size_of::<MONITORINFO>() as u32;
-    GetMonitorInfoW(MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST), &mut m);
-    let w = m.rcWork;
-    let beside = |p: i32, lo: i32, hi: i32| (if p < (lo + hi) / 2 { p + px(24) } else { p - px(24) - size }).clamp(lo, hi - size);
-    SetWindowPos(t, HWND_TOPMOST, beside(x, w.left, w.right), beside(y, w.top, w.bottom), size, size, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+/// A sparkle on the cursor, on the PC the mouse just arrived on.
+unsafe fn show_spark(hwnd: HWND, x: i32, y: i32) {
+    let (t, size) = (SPARK_WIN.load(Relaxed) as HWND, spark_size());
+    SPARK_AT.store(0, Relaxed);
+    SetWindowPos(t, HWND_TOPMOST, x - size / 2, y - size / 2, size, size, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     InvalidateRect(t, null(), 0);
-    SetTimer(hwnd, TIMER_TOAST, TOAST_MS, None);
+    SetTimer(hwnd, TIMER_SPARK, SPARK_TICK, None);
+}
+
+/// Bonk: the code box shakes, in 5 whole-pixel steps, with the error sound. For a wrong input.
+unsafe fn bonk(hwnd: HWND) {
+    brand::play(brand::ERROR);
+    BONK_AT.store(1, Relaxed);
+    place_code(hwnd);
+    SetTimer(hwnd, TIMER_BONK, BONK_TICK, None);
+}
+
+fn code_dx() -> i32 { BONK_AT.load(Relaxed).checked_sub(1).map_or(0, |i| BONK[i as usize]) }
+
+/// The code box and its frame, shifted by the bonk step (0 at rest).
+unsafe fn place_code(hwnd: HWND) {
+    MoveWindow(GetDlgItem(hwnd, ID_CODE as i32), px(20 + code_dx()), px(102), px(320), px(28), 1);
+    InvalidateRect(hwnd, &prect(0, 92, 360, 52), 0);
+}
+
+/// The code box only takes what a code can hold; anything else bonks instead of being typed.
+unsafe extern "system" fn code_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if msg == WM_CHAR && wp >= 32 && wp != 127 {
+        let c = char::from_u32(wp as u32).unwrap_or('?');
+        let mut buf = [0u16; 64];
+        let n = GetWindowTextW(h, buf.as_mut_ptr(), 64) as usize;
+        let have = String::from_utf16_lossy(&buf[..n]).chars().filter(char::is_ascii_alphanumeric).count();
+        let sel = SendMessageW(h, 0xB0 /*EM_GETSEL*/, 0, 0) as u32;
+        let full = c.is_ascii_alphanumeric() && have >= 10 && (sel & 0xFFFF) == (sel >> 16);
+        if !(c.is_ascii_alphanumeric() || c == '-') || full {
+            bonk(MAIN.load(Relaxed) as HWND);
+            return 0;
+        }
+    }
+    CallWindowProcW(std::mem::transmute::<usize, WNDPROC>(EDIT_PROC.load(Relaxed)), h, msg, wp, lp)
 }
 
 /// First offer of this run: make room for the button, then Rommel, the jingle and a tray balloon.
@@ -266,6 +312,8 @@ unsafe fn announce(hwnd: HWND, v: &str) {
 fn start_finder() {
     let gen = FINDER.fetch_add(1, Relaxed) + 1;
     let mut codes: Vec<String> = trust::load().into_iter().map(|(code, _)| code).collect();
+    // the code saved by the last pairing counts too, so PCs paired before trust was recorded are found
+    if let Some(saved) = saved_code() { codes.push(saved) }
     if codes.is_empty() { return } // nothing is sent until there is someone to look for
     codes.sort();
     codes.dedup();
@@ -327,6 +375,8 @@ unsafe fn forget_menu(hwnd: HWND, i: usize, from_keyboard: bool) {
     DestroyMenu(m);
     if pick == 1 {
         trust::forget(&f.name);
+        forget_saved_code(&f.code);
+        if saved_code().is_none() { SetWindowTextW(GetDlgItem(hwnd, ID_CODE as i32), wide("").as_ptr()); }
         PEERS.lock().unwrap().retain(|x| x.name != f.name);
         start_finder();
         show_peers(hwnd);
@@ -562,7 +612,8 @@ unsafe fn paint(hwnd: HWND) {
         let u = px(4);
         brand::fill(hdc, &prect(0, 0, 360, 64), MINT);
         brand::lockup(hdc, px(16), px(12), u, face(), &LIGHT, BLACK);
-        pixel_text(hdc, &brand::rect(px(200), px(12) + 4 * u, px(144), 5 * u), 32, APP, BLACK, false);
+        // the brand's title: the app name is a small Silkscreen 16 label on the wordmark's baseline
+        pixel_text(hdc, &prect(184, 38, 160, 16), 16, APP, BLACK, false);
         if EGG.load(Relaxed) > 0 { paint_bubbles(hdc, u) }
         brand::fill(hdc, &prect(0, 64, 360, 1), BLACK);
         // launch bar: a mint block stepping along the band's foot while we look for the other PC
@@ -573,7 +624,7 @@ unsafe fn paint(hwnd: HWND) {
         }
         pixel_text(hdc, &prect(16, 80, 328, 16), 16, "Pairing code", BLACK, false);
         pixel_text(hdc, &prect(16, 152, 328, 16), 16, "Where is the other PC", BLACK, false);
-        brand::frame(hdc, &prect(16, 96, 328, 40), PAPER, BLACK); // behind the code box
+        brand::frame(hdc, &prect(16 + code_dx(), 96, 328, 40), PAPER, BLACK); // behind the code box
         paint_panel(hdc);
     }
     EndPaint(hwnd, &ps);
@@ -640,6 +691,20 @@ fn code_file() -> PathBuf {
     PathBuf::from(std::env::var_os("APPDATA").unwrap_or_default()).join(r"ROWMI\Roam\roam.code")
 }
 
+/// The pairing code from the last time a button was pressed, if there is one.
+fn saved_code() -> Option<String> {
+    let saved = std::fs::read_to_string(code_file()).ok()?;
+    let code = saved.lines().next()?.trim();
+    (code.len() == 10).then(|| code.to_string())
+}
+
+/// Forget on a PC that was only found through the saved code: empty that code too, or it is found again.
+fn forget_saved_code(code: &str) {
+    if saved_code().as_deref() != Some(code) { return }
+    let rest: Vec<String> = std::fs::read_to_string(code_file()).unwrap_or_default().lines().skip(1).map(String::from).collect();
+    let _ = std::fs::write(code_file(), format!("\n{}", rest.join("\n")));
+}
+
 /// Settings used to sit beside the exe. Copied before the delete, so a failure loses nothing.
 fn migrate_code(old: &Path, new: &Path) {
     if let Some(dir) = new.parent() { let _ = std::fs::create_dir_all(dir); }
@@ -698,7 +763,8 @@ pub fn run() {
         ctl("STATIC", &format!("Made in memory of Rommel. v{}", update::VERSION), 0, ID_DEDICATION);
         load_type(hwnd);
         layout(hwnd);
-        make_toast();
+        make_spark();
+        EDIT_PROC.store(SetWindowLongPtrW(code, GWLP_WNDPROC, code_proc as usize as isize) as usize, Relaxed);
         migrate_code(&std::env::current_exe().unwrap().with_file_name("roam.code"), &code_file());
         if let Ok(saved) = std::fs::read_to_string(code_file()) {
             let mut lines = saved.lines();
@@ -734,7 +800,7 @@ unsafe fn start(hwnd: HWND, id: isize) {
         code = gen_code();
     }
     if code.len() != 10 {
-        brand::play(brand::ERROR);
+        bonk(hwnd);
         react(hwnd, Face::Sad, 800);
         status("Type the 10-character code shown on the other PC.");
         return;
@@ -843,7 +909,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_KEYDOWN | WM_LBUTTONDOWN if BOOT.load(Relaxed) >= 6 => { end_boot(hwnd); 0 } // any input after 300 ms skips
         WM_REFRESH => { refresh(hwnd); 0 }
         WM_CLOSE_NOW => { quit(hwnd); 0 }
-        WM_ARRIVED => { show_toast(hwnd, wp as isize as i32, lp as i32); 0 }
+        WM_ARRIVED => { show_spark(hwnd, wp as isize as i32, lp as i32); 0 }
+        WM_TIMER if wp == TIMER_SPARK => {
+            let f = SPARK_AT.fetch_add(1, Relaxed) + 1;
+            let t = SPARK_WIN.load(Relaxed) as HWND;
+            if f as usize >= SPARK.len() { KillTimer(hwnd, TIMER_SPARK); ShowWindow(t, SW_HIDE); } else { InvalidateRect(t, null(), 0); }
+            0
+        }
+        WM_TIMER if wp == TIMER_BONK => {
+            let f = BONK_AT.load(Relaxed) + 1;
+            if f as usize > BONK.len() { BONK_AT.store(0, Relaxed); KillTimer(hwnd, TIMER_BONK); } else { BONK_AT.store(f, Relaxed) }
+            place_code(hwnd);
+            0
+        }
         WM_PEERS => { // while booting, end_boot shows whatever was found
             if BOOT.load(Relaxed) == 0 && !STARTED.load(Relaxed) { show_peers(hwnd) }
             0
@@ -853,7 +931,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             if (0..MAX_PEERS as isize).contains(&i) { forget_menu(hwnd, i as usize, lp == -1); return 0 }
             DefWindowProcW(hwnd, msg, wp, lp)
         }
-        WM_TIMER if wp == TIMER_TOAST => { KillTimer(hwnd, TIMER_TOAST); ShowWindow(TOAST.load(Relaxed) as HWND, SW_HIDE); 0 }
         WM_DPICHANGED => { // the window crossed to a monitor with another scale
             DPI.store((wp & 0xFFFF) as usize, Relaxed);
             let r = &*(lp as *const RECT);
