@@ -462,7 +462,7 @@ dependencies = [
 
 [[package]]
 name = "roam"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "chacha20poly1305",
  "ed25519-dalek",
