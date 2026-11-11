@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::UI::HiDpi::*;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus, ReleaseCapture, SetCapture, SetFocus};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus, ReleaseCapture, SetCapture, SetFocus, VK_DOWN, VK_END, VK_HOME, VK_LEFT, VK_RIGHT, VK_UP};
 use windows_sys::Win32::UI::Shell::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -29,7 +29,12 @@ const ID_PEER: isize = 8; // 8, 9 and 10: one button per trusted PC found
 const MAX_PEERS: usize = 3; // shortcut: the 3 first alphabetically show, raise it when the window can take more rows
 const STYLE: u32 = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN; // paint() must not cover the controls
 const HEIGHT: i32 = 530;
-const ID_BACK: isize = 20; // the About screen's button
+const ID_BACK: isize = 20; // the Settings screen's button
+const ID_SOUND: isize = 21;
+const ID_VOLUME: isize = 22;
+const ID_DOGS: isize = 23;
+const DLGC_WANTARROWS: LRESULT = 1;
+const MK_LBUTTON: usize = 1;
 const SC_ABOUT: usize = 0x10; // our item in the window menu; system commands use the top bits
 const TAGLINE: &str = "Playful tools with a lot of bark.";
 const DEDICATION: &str = "Made in memory of Rommel.";
@@ -91,7 +96,8 @@ static PIXEL16: AtomicUsize = AtomicUsize::new(0); // Silkscreen 16, or null -> 
 static PIXEL24: AtomicUsize = AtomicUsize::new(0);
 static PIXEL32: AtomicUsize = AtomicUsize::new(0);
 static PLEX: [AtomicUsize; 4] = [AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0)]; // body, caption, code, button
-static ABOUT: AtomicUsize = AtomicUsize::new(0); // the About screen while it is open, else 0
+static ABOUT: AtomicUsize = AtomicUsize::new(0); // the Settings screen while it is open, else 0
+static VOL_PROC: AtomicUsize = AtomicUsize::new(0); // the volume control's original window procedure
 static SPARK_WIN: AtomicUsize = AtomicUsize::new(0);
 static SPARK_AT: AtomicU8 = AtomicU8::new(0); // spark frame showing, 0..4
 static SPARK_FAR: AtomicU8 = AtomicU8::new(0); // bit i: spark i takes 16 px steps, else 8, drawn fresh each burst
@@ -330,8 +336,8 @@ unsafe fn plex_text(hdc: HDC, r: &RECT, font: usize, s: &str, c: u32, center: bo
     SelectObject(hdc, old);
 }
 
-/// The only place the version, tagline and dedication appear, per the brand. Version at the top and
-/// the other two at the foot, because the dedication never sits next to a version number.
+/// Settings: the Sound group, then About. About is the only place the version, tagline and dedication
+/// appear, per the brand, and the dedication sits at the foot, away from the version.
 unsafe extern "system" fn about_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_PAINT => {
@@ -341,14 +347,31 @@ unsafe extern "system" fn about_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
             GetClientRect(hwnd, &mut c);
             brand::fill(hdc, &c, PAPER);
             about_band(hdc);
-            plex_text(hdc, &prect(16, 84, 328, 20), 0, &format!("Version {}", update::VERSION), BLACK, false);
+            pixel_text(hdc, &prect(16, 80, 328, 16), 16, "Sound", BLACK, false);
+            pixel_text(hdc, &prect(16, 264, 328, 16), 16, "About", BLACK, false);
+            plex_text(hdc, &prect(16, 288, 328, 20), 0, &format!("Version {}", update::VERSION), BLACK, false);
             plex_text(hdc, &brand::rect(px(16), c.bottom - px(112), px(328), px(20)), 0, TAGLINE, BLACK, false);
             plex_text(hdc, &brand::rect(px(16), c.bottom - px(88), px(328), px(16)), 1, DEDICATION, MUTED, false);
             EndPaint(hwnd, &ps);
             0
         }
-        WM_DRAWITEM => { draw_button(&*(lp as *const DrawItem)); 1 }
-        WM_COMMAND | WM_CLOSE => { close_about(); 0 } // Back, Esc or Alt+F4
+        WM_DRAWITEM => {
+            let d = &*(lp as *const DrawItem);
+            if d.ctl_id as isize == ID_BACK { draw_button(d) } else { draw_setting(d) }
+            1
+        }
+        WM_COMMAND => {
+            let (on, vol, dogs) = brand::sound();
+            match (wp & 0xFFFF) as isize {
+                ID_SOUND => { brand::set_sound(!on, vol, dogs); if !on { brand::play(brand::ON) } }
+                ID_DOGS => { brand::set_sound(on, vol, !dogs); brand::play(if dogs { brand::OFF } else { brand::ON }) }
+                ID_VOLUME => {} // its own keys and clicks, in vol_proc
+                _ => close_about(), // Back or Esc
+            }
+            InvalidateRect(lp as HWND, null(), 0);
+            0
+        }
+        WM_CLOSE => { close_about(); 0 }
         _ => DefWindowProcW(hwnd, msg, wp, lp),
     }
 }
@@ -363,11 +386,84 @@ unsafe fn open_about(hwnd: HWND) {
     ClientToScreen(hwnd, &mut p);
     let a = CreateWindowExW(0, wide("ROWMI.roam.about").as_ptr(), wide(TITLE).as_ptr(), WS_POPUP | WS_VISIBLE,
         p.x, p.y, c.right, c.bottom, hwnd, null_mut(), null_mut(), null());
-    let back = CreateWindowExW(0, wide("BUTTON").as_ptr(), wide("Back").as_ptr(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-        px(16), c.bottom - px(60), px(328), px(44), a, ID_BACK as HMENU, null_mut(), null());
+    let control = |id: isize, text: &str, y: i32| CreateWindowExW(0, wide("BUTTON").as_ptr(), wide(text).as_ptr(),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, px(16), y, px(328), px(44), a, id as HMENU, null_mut(), null());
+    let first = control(ID_SOUND, "Sound", px(100));
+    let volume = control(ID_VOLUME, "Volume", px(152));
+    control(ID_DOGS, "Dog sounds", px(204));
+    control(ID_BACK, "Back", c.bottom - px(60));
+    VOL_PROC.store(SetWindowLongPtrW(volume, GWLP_WNDPROC, vol_proc as usize as isize) as usize, Relaxed);
     ABOUT.store(a as usize, Relaxed);
     EnableWindow(hwnd, 0);
-    SetFocus(back);
+    SetFocus(first);
+}
+
+/// Where the volume's 11 detents sit in its row: the first one's left edge, then width and step.
+fn detents(r: &RECT) -> (i32, i32, i32) {
+    let (w, step) = (px(12), px(18));
+    (r.right - px(4) - 10 * step - w, w, step)
+}
+
+/// A 2 px Cursor Blue ring with a 1 px gap, around `r`.
+unsafe fn focus_ring(hdc: HDC, r: &RECT) {
+    brand::rounded(hdc, &brand::rect(r.left - 3, r.top - 3, r.right - r.left + 6, r.bottom - r.top + 6), BLUE, BLUE, px(8));
+    brand::rounded(hdc, &brand::rect(r.left - 1, r.top - 1, r.right - r.left + 2, r.bottom - r.top + 2), PAPER, PAPER, px(6));
+}
+
+/// A Settings row: the label, then a switch (44 x 24 track, ink when on with a rust knob) or the volume's
+/// detents (ink up to the level, as the UI guidelines' ticks).
+unsafe fn draw_setting(d: &DrawItem) {
+    let (on, vol, dogs) = brand::sound();
+    let (id, r, focus) = (d.ctl_id as isize, d.rc, d.state & ODS_FOCUS != 0);
+    brand::fill(d.hdc, &r, PAPER);
+    let label = match id { ID_SOUND => "Sound", ID_VOLUME => "Volume", _ => "Dog sounds" };
+    plex_text(d.hdc, &brand::rect(r.left, (r.top + r.bottom - px(20)) / 2, px(200), px(20)), 3, label, BLACK, false);
+    if id == ID_VOLUME {
+        let (x0, w, step) = detents(&r);
+        let row = brand::rect(x0, (r.top + r.bottom - px(16)) / 2, 10 * step + w, px(16));
+        if focus { focus_ring(d.hdc, &row) }
+        for i in 0..11u8 {
+            let lit = vol > 0 && i <= vol;
+            brand::fill(d.hdc, &brand::rect(x0 + i as i32 * step, row.top, w, row.bottom - row.top), if lit { BLACK } else { GREY });
+        }
+    } else {
+        let lit = if id == ID_SOUND { on } else { dogs };
+        let track = brand::rect(r.right - px(48), (r.top + r.bottom - px(24)) / 2, px(44), px(24));
+        if focus { focus_ring(d.hdc, &track) }
+        let ink = if lit { BLACK } else { GREY };
+        brand::rounded(d.hdc, &track, ink, ink, px(8));
+        let knob = brand::rect(track.left + px(2) + if lit { px(20) } else { 0 }, track.top + px(2), px(20), px(20));
+        let face = if lit { TAN } else { 0xFFFFFF };
+        brand::rounded(d.hdc, &knob, face, face, px(4));
+    }
+}
+
+/// The volume row takes the arrow keys, Home and End, and clicks or drags on its detents; each step clicks.
+unsafe extern "system" fn vol_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    let (on, vol, dogs) = brand::sound();
+    let mut r: RECT = zeroed();
+    GetClientRect(h, &mut r);
+    let (x0, _, step) = detents(&r);
+    let at = |x: i32| ((x - x0 + step / 2) / step).clamp(0, 10) as u8;
+    let to = match msg {
+        WM_GETDLGCODE => return DLGC_WANTARROWS,
+        WM_KEYDOWN => match wp as u16 {
+            VK_LEFT | VK_DOWN => Some(vol.saturating_sub(1)),
+            VK_RIGHT | VK_UP => Some((vol + 1).min(10)),
+            VK_HOME => Some(0),
+            VK_END => Some(10),
+            _ => None,
+        },
+        WM_LBUTTONDOWN if lparam_xy(lp).0 >= x0 - step => Some(at(lparam_xy(lp).0)),
+        WM_MOUSEMOVE if wp & MK_LBUTTON != 0 => Some(at(lparam_xy(lp).0)),
+        _ => None,
+    };
+    if let Some(v) = to.filter(|v| *v != vol) {
+        brand::set_sound(on, v, dogs);
+        brand::play(brand::detent(v));
+        InvalidateRect(h, null(), 0);
+    }
+    CallWindowProcW(std::mem::transmute::<usize, WNDPROC>(VOL_PROC.load(Relaxed)), h, msg, wp, lp)
 }
 
 unsafe fn close_about() {
@@ -895,7 +991,7 @@ pub fn run() {
         RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(about_proc), hCursor: wc.hCursor, lpszClassName: about_cls.as_ptr(), ..zeroed() });
         let sys = GetSystemMenu(hwnd, 0);
         AppendMenuW(sys, MF_SEPARATOR, 0, null());
-        AppendMenuW(sys, 0, SC_ABOUT, wide("About Roam").as_ptr());
+        AppendMenuW(sys, 0, SC_ABOUT, wide("Settings").as_ptr());
         EDIT_PROC.store(SetWindowLongPtrW(code, GWLP_WNDPROC, code_proc as usize as isize) as usize, Relaxed);
         migrate_code(&std::env::current_exe().unwrap().with_file_name("roam.code"), &code_file());
         if let Ok(saved) = std::fs::read_to_string(code_file()) {
@@ -908,6 +1004,7 @@ pub fn run() {
         let mut anim: BOOL = 1;
         SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &mut anim as *mut _ as _, 0);
         BOOT.store(if anim != 0 { 1 } else { 17 }, Relaxed);
+        brand::load_sound();
         brand::play(brand::STARTUP);
         SetTimer(hwnd, TIMER_BOOT, if anim != 0 { BOOT_TICK } else { 800 }, None);
         ShowWindow(hwnd, SW_SHOW);
@@ -1111,7 +1208,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let m = CreatePopupMenu();
             AppendMenuW(m, 0, MENU_SHOW, wide("Show window").as_ptr());
             AppendMenuW(m, 0, MENU_STOP, wide("Heel (stop)").as_ptr());
-            AppendMenuW(m, 0, MENU_ABOUT, wide("About Roam").as_ptr());
+            AppendMenuW(m, 0, MENU_ABOUT, wide("Settings").as_ptr());
             AppendMenuW(m, 0, MENU_QUIT, wide("Quit").as_ptr());
             let mut p: POINT = zeroed();
             GetCursorPos(&mut p);

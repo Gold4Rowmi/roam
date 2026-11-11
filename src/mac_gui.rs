@@ -38,7 +38,7 @@ type Rect = (f64, f64, f64, f64);
 type Mon = (i32, i32, i32, i32);
 
 #[derive(Clone, Copy, PartialEq)]
-enum Id { Host, Client, Stop, Update, Peer(usize), Back }
+enum Id { Host, Client, Stop, Update, Peer(usize), Back, Sound, Volume, Dogs }
 
 #[derive(Default)]
 struct Pending { text: Option<String>, tray: Option<u8>, visible: Option<bool>, offer: bool, close: bool, heel: bool, arrived: Option<(i32, i32)> }
@@ -178,7 +178,30 @@ fn band() {
     fill((0.0, 64.0, WIDTH, 1.0), GREY);
 }
 
+/// Where the volume's 11 detents sit in a row: the first one's left edge, then width and step.
+fn detents(r: Rect) -> (f64, f64, f64) { (r.0 + r.2 - 4.0 - 10.0 * 18.0 - 12.0, 12.0, 18.0) }
+
+/// A Settings row: the label, then a switch (44 x 24 track, ink when on with a rust knob) or the volume's detents.
+fn draw_setting(id: Id, r: Rect, label: &str) {
+    let (on, vol, dogs) = brand::sound();
+    text((r.0, r.1 + 12.0, 200.0, 20.0), &plex(15.0), label, BLACK, false);
+    if id == Id::Volume {
+        let (x0, w, step) = detents(r);
+        for i in 0..11u8 {
+            fill((x0 + i as f64 * step, r.1 + 14.0, w, 16.0), if vol > 0 && i <= vol { BLACK } else { GREY });
+        }
+    } else {
+        let lit = if id == Id::Sound { on } else { dogs };
+        let ink = if lit { BLACK } else { GREY };
+        let track = (r.0 + r.2 - 48.0, r.1 + 10.0, 44.0, 24.0);
+        rounded(track, ink, ink, 4.0);
+        let face = if lit { TAN } else { 0xFFFFFF };
+        rounded((track.0 + 2.0 + if lit { 20.0 } else { 0.0 }, track.1 + 2.0, 20.0, 20.0), face, face, 2.0);
+    }
+}
+
 fn draw_button(ui: &Ui, id: Id, r: Rect, label: &str) {
+    if matches!(id, Id::Sound | Id::Volume | Id::Dogs) { return draw_setting(id, r, label) }
     let primary = id == Id::Host;
     let pressed = ui.pressed == Some(id);
     let disabled = id == Id::Update && ui.update_busy;
@@ -205,7 +228,10 @@ fn draw_button(ui: &Ui, id: Id, r: Rect, label: &str) {
 
 fn buttons(ui: &Ui) -> Vec<(Id, Rect, String)> {
     let at = |y: f64| (16.0, y, 328.0, 44.0);
-    if ui.about { return vec![(Id::Back, at(height(ui) - 60.0), "Back".into())] }
+    if ui.about {
+        return vec![(Id::Sound, at(100.0), "Sound".into()), (Id::Volume, at(152.0), "Volume".into()),
+                    (Id::Dogs, at(204.0), "Dog sounds".into()), (Id::Back, at(height(ui) - 60.0), "Back".into())];
+    }
     let mut v = if ui.started { vec![(Id::Stop, at(364.0), "Heel".to_string())] }
         else { vec![(Id::Host, at(364.0), "Roam from this PC".to_string()), (Id::Client, at(416.0), "Be controlled".to_string())] };
     let mut y = 468.0;
@@ -277,12 +303,14 @@ fn draw_window(ui: &Ui) {
     if ui.boot > 0 { return draw_boot(ui.boot, h) }
     fill((0.0, 0.0, WIDTH, h), PAPER);
     band();
-    if ui.about { // the wordmark and the three About lines appear only here
+    if ui.about { // Settings: the Sound group, then About, the only place for the wordmark and the three About lines
         let (x, y, u) = (16.0, 17.0, 3.0);
         rommel(x, y, u, Face::Idle);
         wordmark(x + 12.0 * u, y + 4.0 * u, u, BLACK);
         pixel_text((x + 39.0 * u + 12.0, y + 6.0 * u - 2.0, 160.0, 20.0), 16.0, "Roam", BLACK, false);
-        text((16.0, 84.0, 328.0, 20.0), &plex(14.0), &format!("Version {}", update::VERSION), BLACK, false);
+        pixel_text((16.0, 76.0, 328.0, 20.0), 16.0, "Sound", BLACK, false);
+        pixel_text((16.0, 260.0, 328.0, 20.0), 16.0, "About", BLACK, false);
+        text((16.0, 288.0, 328.0, 20.0), &plex(14.0), &format!("Version {}", update::VERSION), BLACK, false);
         text((16.0, h - 112.0, 328.0, 20.0), &plex(14.0), TAGLINE, BLACK, false);
         text((16.0, h - 88.0, 328.0, 16.0), &plex(12.0), DEDICATION, MUTED, false);
     } else {
@@ -568,6 +596,25 @@ impl Canvas {
         match hit {
             Some(Id::Host) | Some(Id::Client) => self.start(hit == Some(Id::Host)),
             Some(Id::Stop) => { brand::play(brand::BACK); self.stop() }
+            Some(Id::Sound) => {
+                let (on, vol, dogs) = brand::sound();
+                brand::set_sound(!on, vol, dogs);
+                if !on { brand::play(brand::ON) }
+            }
+            Some(Id::Dogs) => {
+                let (on, vol, dogs) = brand::sound();
+                brand::set_sound(on, vol, !dogs);
+                brand::play(if dogs { brand::OFF } else { brand::ON });
+            }
+            Some(Id::Volume) => {
+                let (on, vol, dogs) = brand::sound();
+                let (x0, _, step) = detents((16.0, 152.0, 328.0, 44.0));
+                let v = ((x - x0 + step / 2.0) / step).floor().clamp(0.0, 10.0) as u8;
+                if v != vol {
+                    brand::set_sound(on, v, dogs);
+                    brand::play(brand::detent(v));
+                }
+            }
             Some(Id::Back) => {
                 brand::play(brand::BACK);
                 with(|ui| ui.about = false);
@@ -816,7 +863,7 @@ fn main_menu(mtm: MainThreadMarker, view: &Canvas) -> Retained<NSMenu> {
     let bar = NSMenu::new(mtm);
     let target = |item: Retained<NSMenuItem>| { unsafe { item.setTarget(Some(view)) }; item };
     let app_menu = NSMenu::new(mtm);
-    app_menu.addItem(&target(menu_item(mtm, "About Roam", Some(sel!(aboutRoam:)), "")));
+    app_menu.addItem(&target(menu_item(mtm, "Settings…", Some(sel!(aboutRoam:)), ",")));
     app_menu.addItem(&target(menu_item(mtm, "Quit Roam", Some(sel!(quitRoam:)), "q")));
     let edit = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str("Edit"));
     for (title, action, key) in [("Cut", sel!(cut:), "x"), ("Copy", sel!(copy:), "c"), ("Paste", sel!(paste:), "v"), ("Select All", sel!(selectAll:), "a")] {
@@ -832,7 +879,7 @@ fn main_menu(mtm: MainThreadMarker, view: &Canvas) -> Retained<NSMenu> {
 
 fn status_menu(mtm: MainThreadMarker, view: &Canvas) -> Retained<NSMenu> {
     let menu = NSMenu::new(mtm);
-    for (title, action) in [("Show window", sel!(showRoam:)), ("Heel (stop)", sel!(heelRoam:)), ("About Roam", sel!(aboutRoam:)), ("Quit", sel!(quitRoam:))] {
+    for (title, action) in [("Show window", sel!(showRoam:)), ("Heel (stop)", sel!(heelRoam:)), ("Settings", sel!(aboutRoam:)), ("Quit", sel!(quitRoam:))] {
         let item = menu_item(mtm, title, Some(action), "");
         unsafe { item.setTarget(Some(view)) };
         menu.addItem(&item);
@@ -907,6 +954,7 @@ pub fn run() {
     let _ = view.ivars().spark.set(spark);
 
     view.bring_up();
+    brand::load_sound();
     brand::play(brand::STARTUP);
     unsafe { NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(0.055, &view, sel!(tick:), None, true) };
     update::start();
